@@ -2,15 +2,15 @@ import sys
 import numpy
 from ctypes import *
 import dwfconstants as DConsts
-from DigiScopeUI import CenteredViewBox, DigiScopeUI
+from DigiScopeGraph import OscilloscopeUI, get_qt_app
 import math
 import time
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
-import threading
 from IPython.display import display, clear_output
 import pandas as pd
 import numpy as np
+import threading
 
 import datetime
 
@@ -52,6 +52,7 @@ class DigiScope:
         self.rgdSamples = (c_double*8192)()
         self.open()
         self.NBuffers = 0
+        self.data_connectors = None
 
         #params, channel-specific and global
         self.params = {
@@ -101,6 +102,9 @@ class DigiScope:
             'ch2': np.array([])
         })
         
+        # UI functionality temporarily disabled
+        self.ui = None
+        """
         # Create UI only if we're in an environment that supports it
         self.ui = None
         try:
@@ -109,6 +113,7 @@ class DigiScope:
                 self.ui = DigiScopeUI(self, self.params)
         except Exception as e:
             print(f"UI initialization skipped: {e}")
+        """
 
     def open(self):
         """
@@ -299,21 +304,39 @@ class DigiScope:
         Returns:
             None
         """
+        ## set params for shared keywords
+        if "holdoff" in params:
+            dwf.FDwfAnalogInTriggerHoldoffSet(self.hdwf, c_double(params["holdoff"]))
+        if "hysteresis" in params:
+            dwf.FDwfAnalogInTriggerHysteresisSet(self.hdwf, c_double(params["hysteresis"]))
+        if "position" in params:
+            # Calculate trigger position in seconds
+            # Convert from normalized position [0,1] to seconds relative to buffer
+            buffer_size = c_int()
+            dwf.FDwfAnalogInBufferSizeGet(self.hdwf, byref(buffer_size))
+            frequency = c_double()
+            dwf.FDwfAnalogInFrequencyGet(self.hdwf, byref(frequency))
+            trigger_position_seconds = (0.5-params["position"]) * (buffer_size.value / frequency.value)
+            dwf.FDwfAnalogInTriggerPositionSet(self.hdwf, c_double(trigger_position_seconds))
+
+        ## set params for specific trigger types
         if params["type"] == "edge":
             self.set_edge_trigger(params["channel"], params["level"], \
-                                  params["polarity"], params["position"])
+                                  params["polarity"])
         elif params["type"] == "pulse":
             self.set_pulse_trigger(params["channel"], params["level"], \
                                    params["polarity"], params["width"], \
-                                   params["condition"], params["position"])
+                                   params["condition"])
         elif params["type"] == "auto":
             # Set auto trigger with a reasonable timeout
             dwf.FDwfAnalogInTriggerAutoTimeoutSet(self.hdwf, c_double(1.0))  # 1 second timeout
             dwf.FDwfAnalogInTriggerSourceSet(self.hdwf, DConsts.trigsrcNone)
-            # Force configuration to take effect
+        # Apply the configuration to make sure all settings take effect
+        dwf.FDwfAnalogInConfigure(self.hdwf, c_int(0), c_int(1))
 
 
-    def set_edge_trigger(self, channel=1, level=2.0, polarity="+", position=.05,hysteresis=0.001):
+
+    def set_edge_trigger(self, channel=1, level=2.0, polarity="+"):
         """
         Configure an edge trigger on a specific channel.
         
@@ -323,52 +346,43 @@ class DigiScope:
             channel (int): Channel to use as trigger source (1 or 2)
             level (float): Voltage level at which to trigger
             polarity (str): Edge direction: "+" for rising, "-" for falling, "=" for either
-            position (float): Trigger position in the acquisition window (0-1)
-            hysteresis (float): Voltage hysteresis to prevent false triggers
         
         Returns:
             None
         """
-        # Map polarity symbols to constants
-        polar = {"+": DConsts.DwfTriggerSlopeRise, 
-                 "-": DConsts.DwfTriggerSlopeFall,
-                 "=": DConsts.DwfTriggerSlopeEither}
+        # Try using the proper constants for edge triggering with enhanced hysteresis
+        if polarity == "+":
+            slope = DConsts.DwfTriggerSlopeRise
+        elif polarity == "-":
+            slope = DConsts.DwfTriggerSlopeFall
+        else:
+            slope = DConsts.DwfTriggerSlopeEither
+
         
-        # Get buffer size for position calculation
-        buffer_size = c_int()
-        dwf.FDwfAnalogInBufferSizeGet(self.hdwf, byref(buffer_size))
+        # First reset all trigger settings to defaults
+        dwf.FDwfAnalogInTriggerChannelSet(self.hdwf, c_int(0))  # Default to first channel
+        dwf.FDwfAnalogInTriggerTypeSet(self.hdwf, c_int(0))     # Default to edge trigger
+        dwf.FDwfAnalogInTriggerConditionSet(self.hdwf, c_int(0)) # Default to rising edge
+        dwf.FDwfAnalogInTriggerLevelSet(self.hdwf, c_double(0)) # Default trigger level
         
-        # Get frequency for position calculation
-        frequency = c_double()
-        dwf.FDwfAnalogInFrequencyGet(self.hdwf, byref(frequency))
-        
-        # Disable auto trigger
+        # Disable auto trigger to ensure we only trigger on the specified condition
         dwf.FDwfAnalogInTriggerAutoTimeoutSet(self.hdwf, c_double(0))
         
         # Set trigger source to analog in detector
         dwf.FDwfAnalogInTriggerSourceSet(self.hdwf, DConsts.trigsrcDetectorAnalogIn)
         
-        # Set trigger type to edge
+        # Make sure we're in edge trigger mode
         dwf.FDwfAnalogInTriggerTypeSet(self.hdwf, DConsts.trigtypeEdge)
         
-        # Set trigger channel (0-based index)
+        # Set the trigger channel (0-based index)
         dwf.FDwfAnalogInTriggerChannelSet(self.hdwf, c_int(channel-1))
         
-        # Set trigger level
+        # Set the trigger level
         dwf.FDwfAnalogInTriggerLevelSet(self.hdwf, c_double(level))
         
-        # Set trigger condition (rise/fall/either)
-        dwf.FDwfAnalogInTriggerConditionSet(self.hdwf, polar[polarity])
-        
-        # Set trigger hysteresis
-        dwf.FDwfAnalogInTriggerHysteresisSet(self.hdwf, c_double(hysteresis))
-        
-        # Calculate trigger position in seconds
-        # Convert from normalized position [0,1] to seconds relative to buffer
-        trigger_position_seconds = (0.5-position) * (buffer_size.value / frequency.value)
-        
-        # Set trigger position
-        dwf.FDwfAnalogInTriggerPositionSet(self.hdwf, c_double(trigger_position_seconds))
+        # Set the trigger slope to rise/fall/either
+        dwf.FDwfAnalogInTriggerConditionSet(self.hdwf, slope)
+    
         
 
     def print_trigger_settings(self):
@@ -432,7 +446,7 @@ class DigiScope:
         print(f"Auto trigger timeout: {timeout.value:.3f}s")
 
     def set_pulse_trigger(self, channel=1, level=2.0, polarity="+", \
-                        width=50e-6, condition=">", position=.01,hysteresis=0.1):
+                        width=50e-6, condition=">"):
         """
         Configure a pulse trigger on a specific channel.
         
@@ -444,28 +458,19 @@ class DigiScope:
             polarity (str): Edge direction: "+" for rising, "-" for falling, "=" for either
             width (float): Pulse width in seconds
             condition (str): Width comparison: "<" for less than, ">" for greater than, "=" for equal
-            position (float): Trigger position in the acquisition window (0-1)
-            hysteresis (float): Voltage hysteresis to prevent false triggers
         
         Returns:
             None
         """
         # Map polarity and condition symbols to constants
+        # Use the correct constants for pulse trigger
         polar = {"+": DConsts.DwfTriggerSlopeRise, 
                  "-": DConsts.DwfTriggerSlopeFall,
                  "=": DConsts.DwfTriggerSlopeEither}
         cond = {"<": DConsts.triglenLess, 
                 ">": DConsts.triglenMore, 
                 "=": DConsts.triglenTimeout}
-        
-        # Get buffer size for position calculation
-        buffer_size = c_int()
-        dwf.FDwfAnalogInBufferSizeGet(self.hdwf, byref(buffer_size))
-        
-        # Get frequency for position calculation
-        frequency = c_double()
-        dwf.FDwfAnalogInFrequencyGet(self.hdwf, byref(frequency))
-        
+
         # Disable auto trigger
         dwf.FDwfAnalogInTriggerAutoTimeoutSet(self.hdwf, c_double(0))
         
@@ -481,9 +486,6 @@ class DigiScope:
         # Set trigger level
         dwf.FDwfAnalogInTriggerLevelSet(self.hdwf, c_double(level))
         
-        # Add hysteresis to prevent false triggers
-        dwf.FDwfAnalogInTriggerHysteresisSet(self.hdwf, c_double(hysteresis))
-        
         # Set trigger condition (rise/fall/either)
         dwf.FDwfAnalogInTriggerConditionSet(self.hdwf, polar[polarity])
         
@@ -491,15 +493,7 @@ class DigiScope:
         dwf.FDwfAnalogInTriggerLengthSet(self.hdwf, c_double(width))
         dwf.FDwfAnalogInTriggerLengthConditionSet(self.hdwf, cond[condition])
         
-        # Calculate trigger position in seconds
-        # Convert from normalized position [0,1] to seconds relative to buffer
-        trigger_position_seconds = (0.5-position) * (buffer_size.value / frequency.value)
-        
-        # Set trigger position
-        dwf.FDwfAnalogInTriggerPositionSet(self.hdwf, c_double(trigger_position_seconds))
-        
-        # Apply configuration
-        dwf.FDwfAnalogInConfigure(self.hdwf, c_int(0), c_int(0))
+
     def force_trigger(self):
         """
         Force a trigger event regardless of trigger conditions.
@@ -537,108 +531,7 @@ class DigiScope:
         dwf.FDwfAnalogOutNodeAmplitudeSet(self.hdwf, c_int(0), c_int(0), c_double(amplitude))
         dwf.FDwfAnalogOutConfigure(self.hdwf, c_int(0), c_int(1))  # Start the output
 
-    def start_acquisition(self):
-        """
-        Start continuous data acquisition in a background thread.
-        
-        Configures the device for continuous acquisition and starts a thread
-        that continuously acquires data and updates the latest_data property.
-        
-        Returns:
-            None
-        """
-        if not self.is_acquiring:
-            self.is_acquiring = True
-            self.data_ready = False
-            # Configure for continuous acquisition
-            dwf.FDwfAnalogInConfigure(self.hdwf, c_int(0), c_int(1))
-
-            # Start acquisition thread
-            self.acquisition_thread = threading.Thread(target=self._acquisition_loop)
-            self.acquisition_thread.daemon = True
-            self.acquisition_thread.start()
-
-    def stop_acquisition(self):
-        """
-        Stop the continuous data acquisition.
-        
-        Terminates the acquisition thread and stops the device acquisition.
-        
-        Returns:
-            None
-        """
-        if self.is_acquiring:
-            self.is_acquiring = False
-            # Stop acquisition
-            dwf.FDwfAnalogInConfigure(self.hdwf, c_int(0), c_int(0))
-            if hasattr(self, 'acquisition_thread'):
-                self.acquisition_thread.join(timeout=1.0)
-
     
-    def _acquisition_loop(self):
-        """
-        Internal method that runs the continuous acquisition loop.
-        
-        This method runs in a separate thread and continuously acquires data
-        from the device, updating the latest_data property with each acquisition.
-        
-        Returns:
-            None
-        """
-        capture_index = 0
-        while self.is_acquiring:
-            try:
-                start_time = time.time()
-
-                # Configure for continuous acquisition
-                dwf.FDwfAnalogInConfigure(self.hdwf, c_int(0), c_int(1))
-
-                # Wait for acquisition to complete
-                while True:
-                    dwf.FDwfAnalogInStatus(self.hdwf, c_int(1), byref(self.sts))
-                    if self.sts.value == DConsts.DwfStateDone.value:
-                        break
-                    time.sleep(0.0001)
-
-                # Get data from both channels
-                buffer_size = c_int()
-                dwf.FDwfAnalogInBufferSizeGet(self.hdwf, byref(buffer_size))
-                ch1_data = (c_double*buffer_size.value)()
-                ch2_data = (c_double*buffer_size.value)()
-
-                dwf.FDwfAnalogInStatusData(self.hdwf, 0, ch1_data, buffer_size.value)
-                dwf.FDwfAnalogInStatusData(self.hdwf, 1, ch2_data, buffer_size.value)
-
-                # Convert to numpy arrays
-                ch1_np = numpy.frombuffer(ch1_data, dtype=numpy.float64)
-                ch2_np = numpy.frombuffer(ch2_data, dtype=numpy.float64)
-
-                # Create time axis
-                frequency = c_double()
-                dwf.FDwfAnalogInFrequencyGet(self.hdwf, byref(frequency))
-                time_data = numpy.linspace(0, buffer_size.value/frequency.value, buffer_size.value)
-
-                # Create DataFrame
-                import pandas as pd
-                df = pd.DataFrame({
-                    'time': time_data,
-                    'ch1': ch1_np,
-                    'ch2': ch2_np
-                })
-
-                # Update latest data and metadata
-                self.latest_data = df
-                self.last_data = df  # Also update last_data for UI access
-                self.capture_index = capture_index
-                self.capture_time = (time.time() - start_time) * 1000  # Convert to ms
-                self.data_ready = True
-                capture_index += 1
-
-            except Exception as e:
-                print(f"Error in acquisition loop: {e}")
-                self.is_acquiring = False
-                break
-
     def acquire_single(self):
         """
         Acquire a single triggered capture.
@@ -676,36 +569,20 @@ class DigiScope:
         self.dwf.FDwfAnalogInStatusData(self.hdwf, 0, channel1, nSamples) # get channel 1 data
         self.dwf.FDwfAnalogInStatusData(self.hdwf, 1, channel2, nSamples) # get channel 2 data
         
+        
         #convert to DF
         df = pd.DataFrame({
             'time': numpy.linspace(0, nSamples/frequency, nSamples),
             'ch1': numpy.frombuffer(channel1, dtype=numpy.float64),
             'ch2': numpy.frombuffer(channel2, dtype=numpy.float64)
         })
+        self.update_data_connectors(df)
 
         # Update last_data for UI access
         self.last_data = df
         self.data_ready = True
 
         return df
-
-    def start_live_graph(self, *args, **kwargs):
-        """
-        Start the live graphical display of acquired data.
-        
-        Launches the UI's live graph functionality to visualize data in real-time.
-        
-        Args:
-            *args: Variable length argument list passed to UI's start_live_graph
-            **kwargs: Arbitrary keyword arguments passed to UI's start_live_graph
-        
-        Returns:
-            None
-        """
-        if self.ui is not None:
-            self.ui.start_live_graph(*args, **kwargs)
-        else:
-            print("UI not available. Running in non-GUI mode.")
 
     def acquire_series(self, num_captures, chan=[1, 2], callback=None,verbose=0):
         """
@@ -729,7 +606,7 @@ class DigiScope:
         frequency = self.params["scope"]["frequency"]
         # Initialize the stack
         stack = []
-        
+        stack_df = []
         # Set up the channels
         if isinstance(chan, int):
             chan = [chan]
@@ -762,160 +639,136 @@ class DigiScope:
                 #compile data
                 self.dwf.FDwfAnalogInStatusData(self.hdwf, 0, channel1[i], nSamples) # get channel 1 data
                 self.dwf.FDwfAnalogInStatusData(self.hdwf, 1, channel2[i], nSamples) # get channel 2 data
-                
+                df = pd.DataFrame({
+                'time': numpy.linspace(0, nSamples/frequency, nSamples),
+                'ch1': numpy.frombuffer(channel1[i], dtype=numpy.float64),
+                'ch2': numpy.frombuffer(channel2[i], dtype=numpy.float64)
+                })
+                stack_df.append(df)
+                self.update_data_connectors(df)
                 # Update last_data for UI access
                 self.last_data = stack
                 self.data_ready = True
         except KeyboardInterrupt:
             print("Keyboard Interrupt at Acquisition {}".format(i))
             return None
-            
-        #convert to DFs
-        stack_df = []
-        for i in range(num_captures):
-            df = pd.DataFrame({
-                'time': numpy.linspace(0, nSamples/frequency, nSamples),
-                'ch1': numpy.frombuffer(channel1[i], dtype=numpy.float64),
-                'ch2': numpy.frombuffer(channel2[i], dtype=numpy.float64)
-            })
-            stack_df.append(df)
-
         return stack_df
     
-    def reset_single_triggered(self):
+    def acquire_continuous(self, callback=None, verbose=0):
         """
-        Reset the device to single-trigger acquisition mode.
+        Acquire data continuously from the device.
         
-        Configures the device for single acquisition with manual triggering.
+        This method sets up the device for continuous acquisition and calls the
+        callback function after each acquisition."""
+        nSamples = self.params["scope"]["samples"]
+        frequency = self.params["scope"]["frequency"]
+        # Initialize the stack
+
+        channel1 = (c_double*nSamples)()
+        channel2 = (c_double*nSamples)()
         
-        Returns:
-            str: Status message
+        # Initial configuration
+        self.dwf.FDwfAnalogInConfigure(self.hdwf, c_int(0), c_int(1))
+        
+        # Acquire the stack
+        print("Beginning continuous acquisition")
+        try:
+            while True:
+                # Update capture index for UI
+                self.capture_index += 1
+                if verbose > 0:
+                    display("Acquiring: {}".format(self.capture_index))
+                    clear_output(wait=True)
+                
+                # Make sure we're properly configured for the next acquisition
+                # Ensure trigger settings are properly applied
+                self.configure_trigger(self.params["trigger"])
+                
+                # Start the acquisition
+                self.dwf.FDwfAnalogInConfigure(self.hdwf, c_int(0), c_int(1))
+                
+                # Wait for acquisition to complete
+                while True:
+                    status = c_byte()
+                    if dwf.FDwfAnalogInStatus(self.hdwf, c_int(1), byref(status)) != 1:
+                        szError = create_string_buffer(512)
+                        dwf.FDwfGetLastErrorMsg(szError);
+                        print("failed to open device\n"+str(szError.value))
+                        raise Exception("failed to open device")
+                    if status.value == DConsts.DwfStateDone.value :
+                        break
+                
+                #compile data
+                self.dwf.FDwfAnalogInStatusData(self.hdwf, 0, channel1, nSamples) # get channel 1 data
+                self.dwf.FDwfAnalogInStatusData(self.hdwf, 1, channel2, nSamples) # get channel 2 data
+                df = pd.DataFrame({
+                'time': numpy.linspace(0, nSamples/frequency, nSamples),
+                'ch1': numpy.frombuffer(channel1, dtype=numpy.float64),
+                'ch2': numpy.frombuffer(channel2, dtype=numpy.float64)
+                })
+                self.update_data_connectors(df)
+                # Update last_data for UI access
+                self.last_data = df
+                self.data_ready = True
+                
+                # Call the callback if provided
+                if callback:
+                    callback(df)
+                    
+                # Small sleep to prevent CPU overload
+                time.sleep(0.01)
+                
+        except KeyboardInterrupt:
+            print("Keyboard Interrupt - Continuous acquisition stopped")
+            return None
+
+    def update_data_connectors(self, df):
         """
-        # Configure for single acquisition
-        dwf.FDwfAnalogInConfigure(self.hdwf, c_int(0), c_int(0))  # Reset
-        # Set trigger timeout to 0 (disable auto trigger)
-        dwf.FDwfAnalogInTriggerAutoTimeoutSet(self.hdwf, c_double(0))
-        return "Single trigger mode set"
+        Update the data connectors with the latest data.
+        Thread-safe implementation that won't crash if UI is accessed from multiple threads.
+        Decimates data to reduce the amount sent to the UI while preserving the overall waveform.
+        """
+        if self.data_connectors is not None:
+            try:
+                self.data_connectors[0].cb_set_data(df['ch1'], df['time'])
+                self.data_connectors[1].cb_set_data(df['ch2'], df['time'])
+            except Exception as e:
+                # Safely handle errors that might occur due to threading issues
+                print(f"Error updating data connectors: {e}")
+
+    def graph(self):
+        """Initialize UI on the main thread to ensure thread safety with PyQt."""
+        # Ensure QApplication is created in the main thread
+        app = get_qt_app()
+        
+        # Create UI on main thread
+        self.ui = OscilloscopeUI(self, app, npoints = self.params["scope"]["samples"])
+        
+        # No need to start a thread for the event loop
+        # The event loop should run in the main thread where the UI was created
+        # The calling code should call app.exec_() after this
+        
+        return self.ui  # Return UI object for caller's reference
+
+    def _run_event_loop(self, app):
+        """
+        Run the Qt event loop in a separate thread.
+        Note: This is generally not recommended - the event loop should run in the main thread.
+        """
+        # This method is kept for backward compatibility but is not the preferred approach
+        if threading.current_thread() is not threading.main_thread():
+            app.exec_()
+
+    def create_ui(self):
+        """Create the UI - maintained for backward compatibility."""
+        return self.graph()
+
+    def set_data_connectors(self, data_connectors):
+        self.data_connectors = data_connectors
     
-    def trig_wait(self):
-        """
-        Wait for the trigger to become active.
+    def __del__(self):
+        self.close()
         
-        Blocks until the device enters the triggered or armed state,
-        or until timeout (200ms).
-        
-        Returns:
-            None
-        """
-        start_time = time.time()
-        while True:
-            dwf.FDwfAnalogInStatus(self.hdwf, c_int(0), byref(self.sts))
-            if self.sts.value == DConsts.DwfStateTriggered.value or \
-               self.sts.value == DConsts.DwfStateArmed.value:
-                return
-            if time.time() - start_time > 0.2:  # Timeout after 200ms
-                return
-            time.sleep(0.01)
-    
-    def waveform_wait(self):
-        """
-        Wait for a waveform to be available.
-        
-        Blocks until the device indicates that acquisition is complete,
-        or until timeout (200ms).
-        
-        Returns:
-            None
-        """
-        start_time = time.time()
-        while True:
-            dwf.FDwfAnalogInStatus(self.hdwf, c_int(1), byref(self.sts))
-            if self.sts.value == DConsts.DwfStateDone.value:
-                return
-            if time.time() - start_time > 0.2:  # Timeout after 200ms
-                return
-            time.sleep(0.01)
-    
-    def wait(self, timeout=0.1):
-        """
-        Short wait for device stability.
-        
-        Simple delay to allow the device to stabilize after configuration changes.
-        
-        Args:
-            timeout (float): Wait time in seconds
-        
-        Returns:
-            None
-        """
-        time.sleep(timeout)
-    
- 
-    def import_current_data(self, chan=(1), l=None):
-        """
-        Import current data from specified channels.
-        
-        Retrieves the most recent data from the device for the specified channels.
-        
-        Args:
-            chan (list or int): Channel(s) to import data from
-            l (int): Optional limit on the number of data points to import
-        
-        Returns:
-            dict: Dictionary containing time and channel data arrays
-        """
-        # Get buffer size
-        buffer_size = c_int()
-        dwf.FDwfAnalogInBufferSizeGet(self.hdwf, byref(buffer_size))
-        
-        # Limit buffer size if l is specified
-        if l is not None and l < buffer_size.value:
-            actual_size = l
-        else:
-            actual_size = buffer_size.value
-        
-        # Create a dict to store channel data
-        data = {}
-        
-        # Add time data
-        frequency = c_double()
-        dwf.FDwfAnalogInFrequencyGet(self.hdwf, byref(frequency))
-        data['time'] = numpy.linspace(0, actual_size/frequency.value, actual_size)
-        
-        # Get data for each requested channel
-        for ch in (chan if isinstance(chan, (list, tuple)) else [chan]):
-            if ch < 1 or ch > 2:  # Limit to available channels
-                continue
-            
-            ch_data = (c_double*buffer_size.value)()
-            dwf.FDwfAnalogInStatusData(self.hdwf, ch-1, ch_data, buffer_size.value)
-            
-            # Convert to numpy array and limit size if needed
-            ch_np = numpy.frombuffer(ch_data, dtype=numpy.float64)[:actual_size]
-            data[f'ch{ch}'] = ch_np
-        
-        # Also store as last_data in DataFrame format for UI access
-        import pandas as pd
-        df = pd.DataFrame({
-            'time': data['time'],
-            'ch1': data.get('ch1', numpy.zeros_like(data['time'])),
-            'ch2': data.get('ch2', numpy.zeros_like(data['time']))
-        })
-        self.last_data = df
-        
-        return data
-        
-    def set_rolling_acq(self):
-        """
-        Set the device to continuous (rolling) acquisition mode.
-        
-        Starts continuous data acquisition in the background.
-        
-        Returns:
-            str: Status message
-        """
-        self.start_acquisition()
-        return "Continuous acquisition started"
 
 def self_trigger_test(params):
     """
@@ -963,10 +816,39 @@ def edge_trigger_test(params):
     ds.configure_all(params)
     ds.external_stack_acquire(10, trigger_type="edge")
 
+def ui_trigger_test(params):
+    """Run a test with the oscilloscope UI in a thread-safe manner."""
+    # Initialize Qt application in main thread
+    app = get_qt_app()
+    
+    # Create DigiScope instance
+    ds = DigiScope()
+    ds.configure_all(params)
+    
+    # Create UI (will now show the main window)
+    ds.graph()
+    
+    print("UI should be visible now. Starting data acquisition...")
+    
+    # Start acquiring data in a background thread
+    def run_acquisition():
+        # Wait briefly for UI to initialize
+        time.sleep(0.5)
+        # Acquire continuous data
+        ds.acquire_continuous()
+        
+    acquisition_thread = threading.Thread(target=run_acquisition)
+    acquisition_thread.daemon = True
+    acquisition_thread.start()
+    
+    # This blocks until the window is closed
+    print("Running Qt event loop in main thread. Close window to exit.")
+    sys.exit(app.exec_())
+
 if __name__ == "__main__":
     #test with GUI
-    frequency = 1e6
-    duration = 10
+    frequency = 1e5  # Sampling frequency
+    duration = 0.1   # Duration of capture
     samples = int(frequency * duration)
     custom_params = {
         1: {
@@ -988,12 +870,20 @@ if __name__ == "__main__":
         "trigger": {
             "type": "edge",
             "channel": 1,
-            "level": 1.0,
-            "polarity": "+"
+            "level": 0.5,        # Reduced trigger level for cleaner triggering
+            "polarity": "+",     # Rising edge only
+            "hysteresis": 0.1,   # Increased hysteresis to prevent double triggering
+            "position": 0.2      # Position trigger point 20% from start
             #"width": 0.05,
             #"condition": ">",
-            #"position": 0.5,
+        },
+        "wavegen": {
+            "waveform": "sine",
+            "frequency": 15,      # Slower frequency for more reliable triggering
+            "offset": 0.0,
+            "amplitude": 1.5
         }
     }
-    self_trigger_test(custom_params)
+    #self_trigger_test(custom_params)
     #stack_acquire_test(custom_params)
+    ui_trigger_test(custom_params)
