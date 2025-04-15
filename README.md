@@ -1,2 +1,87 @@
 # dwfpy-ux
- Digilent Waveforms API facade with optional UIX
+Digilent Waveforms API facade with optional UIX
+
+## Overview
+`dwfpy-ux` provides a Python interface to Digilent oscilloscope hardware using the Waveforms SDK. This library simplifies device connection, configuration, and data acquisition for Digilent oscilloscope devices.
+
+## Features
+- Easy device connection and configuration
+- Support for various trigger modes (edge, pulse, auto)
+- Channel configuration with customizable ranges, offsets, and coupling
+- Single and continuous acquisition modes
+- Waveform generation for testing
+- Data export as pandas DataFrames
+
+## Requirements
+- Python 3.6+
+- NumPy
+- Pandas
+- Digilent Waveforms SDK (dwf library)
+
+## Installation
+1. Install the Digilent Waveforms SDK from [Digilent's website](https://digilent.com/reference/software/waveforms/waveforms-3/start)
+2. Install required Python packages:
+```
+pip install numpy pandas
+```
+3. Clone this repository:
+```
+git clone https://github.com/yourusername/dwfpy-ux.git
+```
+
+## Quick Start
+```python
+from DwfInterface.DigiScope import DigiScope
+import dwfconstants as DConsts
+
+# Create a DigiScope instance
+ds = DigiScope()
+
+# Configure oscilloscope parameters
+params = {
+    1: {    
+        "range": 5.0,
+        "offset": 0.0,
+        "enable": 1,
+        "coupling": DConsts.DwfAnalogCouplingDC,
+    },
+    2: {
+        "range": 5.0,
+        "offset": 0.0,
+        "enable": 1,
+        "coupling": DConsts.DwfAnalogCouplingDC,
+    },
+    "scope": {
+        "frequency": 1e6,
+        "samples": 8000,
+    },
+    "trigger": {
+        "type": "edge",
+        "channel": 1,
+        "level": 2.0,
+        "polarity": "+",
+        "position": 0.01,
+    },
+    "wavegen": {
+        "waveform": "sine",
+        "frequency": 1e6,
+        "amplitude": 1.0,
+        "offset": 0.0,
+    }
+}
+
+# Apply configuration
+ds.configure_all(params)
+
+# Acquire a single capture
+data = ds.acquire_single()
+
+# Data is a pandas DataFrame with time, ch1, ch2 columns
+print(data.head())
+
+# Close the device when done
+ds.close()
+```
+
+## License
+None
