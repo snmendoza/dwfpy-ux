@@ -150,18 +150,31 @@ from DwfInterface.DigiScopeGraph import OscilloscopeUI
 import sys
 from PyQt5.QtWidgets import QApplication
 
-# Create a DigiScope instance and configure it
+# Initialize Qt application in main thread
+app = get_qt_app()
+
+# Create DigiScope instance
 ds = DigiScope()
-ds.configure_all(params)  # params configured as in examples above
+ds.configure_all(my_params)
 
-# Create the GUI application
-app = QApplication(sys.argv)
-ui = OscilloscopeUI(ds, npoints=1000)
+# Create UI (will now show the main window)
+ds.graph()
 
-# Start acquisition in the background
-ds.acquire_continuous()
+print("UI should be visible now. Starting data acquisition...")
 
-# Start the GUI event loop
+# Start acquiring data in a background thread
+def run_acquisition():
+    # Wait briefly for UI to initialize
+    time.sleep(0.5)
+    # Acquire continuous data
+    ds.acquire_continuous()
+    
+acquisition_thread = threading.Thread(target=run_acquisition)
+acquisition_thread.daemon = True
+acquisition_thread.start()
+
+# This blocks until the window is closed
+print("Running Qt event loop in main thread. Close window to exit.")
 sys.exit(app.exec_())
 ```
 
