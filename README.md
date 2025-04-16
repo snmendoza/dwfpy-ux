@@ -1,6 +1,6 @@
 # dwfpy-ux
 Digilent Waveforms API facade with optional UIX
-![DigiScope GUI Example](docs/ux_ex.jpg)
+![DigiScope GUI Example](docs/ux_ex.gif)
 ```python
 from DwfInterface import DigiScope
 ds = DigiScope()
