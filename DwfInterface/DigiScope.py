@@ -564,7 +564,11 @@ class DigiScope:
         self.capture_index = 1
             
         # Wait for acquisition to complete
-        self.await_acquisition()
+        try:
+            self.await_acquisition()
+        except KeyboardInterrupt:
+            print("Keyboard Interrupt at Acquisition {}".format(self.capture_index))
+            return None
 
         df = self.import_current_data(channel1, channel2, nSamples, frequency)
         self.update_data_connectors(df)
@@ -662,7 +666,11 @@ class DigiScope:
                 self.dwf.FDwfAnalogInConfigure(self.hdwf, c_int(0), c_int(1))
                 
                 # Wait for acquisition to complete
-                self.await_acquisition()
+                try:
+                    self.await_acquisition()
+                except KeyboardInterrupt:
+                    print("Keyboard Interrupt at Acquisition {}".format(self.capture_index))
+                    return None
                 df = self.import_current_data(channel1, channel2, nSamples, frequency)
 
                 # Update last_data for UI access
@@ -793,7 +801,7 @@ class DigiScope:
                     raise Exception("failed to open device")
             except KeyboardInterrupt:
                 print("Keyboard Interrupt")
-                return
+                raise KeyboardInterrupt
             #if done, breaks
             if status.value == DConsts.DwfStateDone.value:
                 break

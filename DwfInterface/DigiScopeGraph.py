@@ -1,8 +1,15 @@
 #imports
 import sys
-from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QLabel, QPushButton, QLineEdit, QGroupBox, QFormLayout
-from PyQt5.QtCore import QTimer
-from PyQt5.QtGui import QPen, QColor
+try:
+    # Try to import from PyQt5 first
+    from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QLabel, QPushButton, QLineEdit, QGroupBox, QFormLayout
+    from PyQt5.QtCore import QTimer, Qt
+    from PyQt5.QtGui import QPen, QColor
+except ImportError:
+    # Fall back to PyQt6 if PyQt5 is not available or incompatible
+    from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QLabel, QPushButton, QLineEdit, QGroupBox, QFormLayout
+    from PyQt6.QtCore import QTimer, Qt
+    from PyQt6.QtGui import QPen, QColor
 import pyqtgraph as pg
 from pglive.sources.data_connector import DataConnector
 from threading import Thread, Lock
@@ -95,8 +102,22 @@ class OscilloscopeUI(QMainWindow):
 
     def update_timestamp(self):
         """Update the timestamp label with the current time"""
-        current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-        self.timestamp_label.setText(f"Last Update: {current_time}")
+        current_time = datetime.datetime.now()
+        
+        # Initialize last_timestamp if it doesn't exist
+        if not hasattr(self, 'last_timestamp'):
+            self.last_timestamp = current_time
+            time_diff_sec = 0
+        else:
+            # Calculate time difference in seconds
+            time_diff_sec = (current_time - self.last_timestamp).total_seconds()
+            
+        # Update the last timestamp
+        self.last_timestamp = current_time
+        
+        # Format for display
+        formatted_time = current_time.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        self.timestamp_label.setText(f"Last Update: {formatted_time} ({time_diff_sec:.3f}s)")
 
     def setup_ui_elements(self):
         """Setup. two charts with a shared x axis, ch1,ch2"""
@@ -136,14 +157,24 @@ class OscilloscopeUI(QMainWindow):
             #sview_box.setLimits(yMin=-10, yMax=10)
         
         # Create the plots with smoother line rendering
-        from PyQt5.QtCore import Qt
+        #from PyQt5.QtCore import Qt
         yellow_pen = QPen(QColor(255, 255, 0))
         yellow_pen.setWidth(0)  # Slightly thicker for smoother appearance
-        yellow_pen.setStyle(Qt.SolidLine)
+        try:
+            # Qt5 style
+            yellow_pen.setStyle(Qt.SolidLine)
+        except AttributeError:
+            # Qt6 style
+            yellow_pen.setStyle(Qt.PenStyle.SolidLine)
         
         blue_pen = QPen(QColor(0, 0, 255))
         blue_pen.setWidth(0)  # Slightly thicker for smoother appearance
-        blue_pen.setStyle(Qt.SolidLine)
+        try:
+            # Qt5 style
+            blue_pen.setStyle(Qt.SolidLine)
+        except AttributeError:
+            # Qt6 style
+            blue_pen.setStyle(Qt.PenStyle.SolidLine)
         
         # Create plots with proper connection mode for smooth lines
         self.ch1_plot = LiveLinePlot(pen=yellow_pen, connect="all")
@@ -268,14 +299,24 @@ class OscilloscopeUI(QMainWindow):
             connector.sig_new_data.connect(lambda *args: self.update_timestamp())
         
         # Reapply the pen configuration for smooth rendering
-        from PyQt5.QtCore import Qt
+        # Get the appropriate Qt constant based on whether we're using PyQt5 or PyQt6
+        try:
+            # Qt5 style
+            solid_line = Qt.SolidLine
+        except AttributeError:
+            # Qt6 style
+            solid_line = Qt.PenStyle.SolidLine
+            
         yellow_pen = QPen(QColor(255, 255, 0))
         yellow_pen.setWidth(0)  # Slightly thicker for smoother appearance
-        yellow_pen.setStyle(Qt.SolidLine)
+
+        yellow_pen.setStyle(solid_line)
+
         
         blue_pen = QPen(QColor(0, 0, 255))
         blue_pen.setWidth(0)  # Slightly thicker for smoother appearance
-        blue_pen.setStyle(Qt.SolidLine)
+        blue_pen.setStyle(solid_line)
+     
         
         self.ch1_plot.setPen(yellow_pen)
         self.ch2_plot.setPen(blue_pen)
