@@ -1,5 +1,13 @@
 # dwfpy-ux
 Digilent Waveforms API facade with optional UIX
+![DigiScope GUI Example](docs/ux_ex.jpg)
+```python
+from DwfInterface import DigiScope
+ds = DigiScope()
+ds.configure_all(params)
+ds.graph()
+ds.acquire_continuous()
+```
 
 ## Overview
 `dwfpy-ux` provides a Python interface to Digilent oscilloscope hardware using the Waveforms SDK. This library simplifies device connection, configuration, and data acquisition for Digilent oscilloscope devices.
