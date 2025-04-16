@@ -1,6 +1,6 @@
 #imports
 import sys
-from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QLabel, QPushButton
+from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QLabel, QPushButton, QLineEdit, QGroupBox, QFormLayout
 from PyQt5.QtCore import QTimer
 from PyQt5.QtGui import QPen, QColor
 import pyqtgraph as pg
@@ -34,10 +34,11 @@ class OscilloscopeUI(QMainWindow):
     then the data connector gets assigned to scope,
     and all data acq will call the data connector
     """
-    def __init__(self, scope, app=None, npoints=1000):
+    def __init__(self, scope, app=None, npoints=1000, max_plot_pts = 2000):
         super().__init__()
         # Use provided app or get the global one
-        self.ds = int(npoints / 1000)
+        self.max_plot_pts = max_plot_pts
+        self.ds = int(npoints / self.max_plot_pts)
         self.app = app if app is not None else get_qt_app()
         self.scope = scope
         self.lock = Lock()
@@ -70,7 +71,7 @@ class OscilloscopeUI(QMainWindow):
         3. Refreshes the data visualization
         """
         # Update downsampling rate - higher points = higher ds value
-        self.ds = max(1, int(Npoints / 1000))
+        self.ds = max(1, int(Npoints / self.max_plot_pts))
         
         # Update plot widget downsampling settings
         for plot_widget in [self.plot_widget_ch1, self.plot_widget_ch2]:
@@ -159,6 +160,72 @@ class OscilloscopeUI(QMainWindow):
         layout.addWidget(self.plot_widget_ch1)
         layout.addWidget(self.plot_widget_ch2)
         
+        # Add Y-range controls in a more compact layout
+        y_range_layout = QHBoxLayout()
+        
+        # Channel 1 Y-range controls
+        ch1_group = QGroupBox("CH1 Y-Range")
+        ch1_group.setFixedHeight(70)
+        ch1_layout = QHBoxLayout()
+        ch1_layout.setContentsMargins(5, 2, 5, 2)
+        ch1_layout.setSpacing(5)
+        
+        # Create min/max containers for CH1
+        ch1_min_layout = QHBoxLayout()
+        ch1_min_layout.setSpacing(2)
+        ch1_min_layout.addWidget(QLabel("Min:"))
+        self.ch1_ymin = QLineEdit("-5")
+        self.ch1_ymin.setFixedWidth(50)
+        self.ch1_ymin.returnPressed.connect(lambda: self.set_y_range(0))
+        ch1_min_layout.addWidget(self.ch1_ymin)
+        
+        ch1_max_layout = QHBoxLayout()
+        ch1_max_layout.setSpacing(2)
+        ch1_max_layout.addWidget(QLabel("Max:"))
+        self.ch1_ymax = QLineEdit("5")
+        self.ch1_ymax.setFixedWidth(50)
+        self.ch1_ymax.returnPressed.connect(lambda: self.set_y_range(0))
+        ch1_max_layout.addWidget(self.ch1_ymax)
+        
+        # Add min/max containers to main layout
+        ch1_layout.addLayout(ch1_min_layout)
+        ch1_layout.addLayout(ch1_max_layout)
+        ch1_group.setLayout(ch1_layout)
+        
+        # Channel 2 Y-range controls
+        ch2_group = QGroupBox("CH2 Y-Range")
+        ch2_group.setFixedHeight(70)
+        ch2_layout = QHBoxLayout()
+        ch2_layout.setContentsMargins(5, 2, 5, 2)
+        ch2_layout.setSpacing(5)
+        
+        # Create min/max containers for CH2
+        ch2_min_layout = QHBoxLayout()
+        ch2_min_layout.setSpacing(2)
+        ch2_min_layout.addWidget(QLabel("Min:"))
+        self.ch2_ymin = QLineEdit("-5")
+        self.ch2_ymin.setFixedWidth(50)
+        self.ch2_ymin.returnPressed.connect(lambda: self.set_y_range(1))
+        ch2_min_layout.addWidget(self.ch2_ymin)
+        
+        ch2_max_layout = QHBoxLayout()
+        ch2_max_layout.setSpacing(2)
+        ch2_max_layout.addWidget(QLabel("Max:"))
+        self.ch2_ymax = QLineEdit("5")
+        self.ch2_ymax.setFixedWidth(50)
+        self.ch2_ymax.returnPressed.connect(lambda: self.set_y_range(1))
+        ch2_max_layout.addWidget(self.ch2_ymax)
+        
+        # Add min/max containers to main layout
+        ch2_layout.addLayout(ch2_min_layout)
+        ch2_layout.addLayout(ch2_max_layout)
+        ch2_group.setLayout(ch2_layout)
+        
+        # Add groups to layout
+        y_range_layout.addWidget(ch1_group)
+        y_range_layout.addWidget(ch2_group)
+        layout.addLayout(y_range_layout)
+        
         # Create a single reset button that resets both views
         reset_button = QPushButton("Reset Views")
         reset_button.setFixedWidth(100)  # Make button small and fixed width
@@ -191,8 +258,8 @@ class OscilloscopeUI(QMainWindow):
         """Reset the plots by recreating the data connectors"""
         # Create new data connectors with the same optimized settings
         self.data_connectors = [
-            DataConnector(self.ch1_plot, max_points=1000, update_rate=5, plot_rate=30, ignore_auto_range=True),
-            DataConnector(self.ch2_plot, max_points=1000, update_rate=5, plot_rate=30, ignore_auto_range=True)
+            DataConnector(self.ch1_plot, max_points=self.max_plot_pts, update_rate=5, plot_rate=30, ignore_auto_range=True),
+            DataConnector(self.ch2_plot, max_points=self.max_plot_pts, update_rate=5, plot_rate=30, ignore_auto_range=True)
         ]
         
         # Fix timestamp update issue by directly connecting to signals in reset_plots too
@@ -229,6 +296,29 @@ class OscilloscopeUI(QMainWindow):
         view_box2.enableAutoRange(x=True, y=True)
         view_box2.setAutoVisible(x=True, y=True)
         view_box2.autoRange()  # Force immediate auto-range
+
+    def set_y_range(self, channel):
+        """Set the Y range for a specific channel"""
+        try:
+            if channel == 0:
+                ymin = float(self.ch1_ymin.text())
+                ymax = float(self.ch1_ymax.text())
+                view_box = self.plot_widget_ch1.getPlotItem().getViewBox()
+            else:
+                ymin = float(self.ch2_ymin.text())
+                ymax = float(self.ch2_ymax.text())
+                view_box = self.plot_widget_ch2.getPlotItem().getViewBox()
+            
+            # Ensure min is less than max
+            if ymin >= ymax:
+                raise ValueError("Min must be less than Max")
+                
+            # Set Y range and disable auto-range
+            view_box.setYRange(ymin, ymax)
+            view_box.enableAutoRange(y=False)
+        except ValueError as e:
+            # In a real application, you might want to show an error dialog here
+            print(f"Invalid Y range: {e}")
 
 
 # Test code to run the UI with simulated data

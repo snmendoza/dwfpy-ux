@@ -60,13 +60,13 @@ class DigiScope:
                 "range": 5.0,
                 "offset": 0.0,
                 "enable": 1,
-                "coupling": DConsts.DwfAnalogCouplingAC,
+                "coupling": "dc",
             },
             2: {
                 "range": 5.0,
                 "offset": 0.0,
                 "enable": 1,
-                "coupling": DConsts.DwfAnalogCouplingDC,
+                "coupling": "dc",
             },
             "scope": {
                 "frequency": 1e6,
@@ -238,6 +238,10 @@ class DigiScope:
         Returns:
             None
         """
+        couplings = {
+            "ac": DConsts.DwfAnalogCouplingAC,
+            "dc": DConsts.DwfAnalogCouplingDC
+        }
         # Enable the channel first
         dwf.FDwfAnalogInChannelEnableSet(self.hdwf, c_int(channel-1), c_int(params["enable"]))
 
@@ -246,7 +250,7 @@ class DigiScope:
         dwf.FDwfAnalogInChannelOffsetSet(self.hdwf, c_int(channel-1), c_double(params["offset"]))
 
         # Set coupling
-        dwf.FDwfAnalogInChannelCouplingSet(self.hdwf, c_int(channel-1), params["coupling"])
+        dwf.FDwfAnalogInChannelCouplingSet(self.hdwf, c_int(channel-1), couplings[params["coupling"].lower()])
 
 
                 
@@ -280,6 +284,7 @@ class DigiScope:
                 self.ui.update_Npoints(params["samples"])
             if hasattr(self.ui, 'reset_all_views'):
                 self.ui.reset_all_views()
+
     def configure_trigger(self, params):
         """
         Configure the oscilloscope trigger system.
@@ -518,7 +523,15 @@ class DigiScope:
         waveform_map = {"sine": DConsts.funcSine,
                         "square": DConsts.funcSquare,
                         "triangle": DConsts.funcTriangle,
-                        "ramp": DConsts.funcRampUp}
+                        "ramp": DConsts.funcRampUp,                                                
+                        "dc": DConsts.funcDC,
+                        "noise": DConsts.funcNoise,
+                        "pulse": DConsts.funcPulse,
+                        "trap": DConsts.funcTrapezium,
+                        "rampdown": DConsts.funcRampDown,
+                        "sinepower": DConsts.funcSinePower,
+                        "sinena": DConsts.funcSineNA}
+        
         # Configure the analog output
         dwf.FDwfAnalogOutNodeEnableSet(self.hdwf, c_int(0), c_int(0), c_int(1))  # Enable channel 1
         dwf.FDwfAnalogOutNodeFunctionSet(self.hdwf, c_int(0), c_int(0), waveform_map[waveform])
@@ -715,9 +728,12 @@ class DigiScope:
                 # Check if we're in a Jupyter QtConsole or Notebook
                 if hasattr(ipython, 'kernel'):
                     # Enable GUI event loop integration
-                    ipython.magic('gui qt')
-                    print("Qt event loop integrated with Jupyter - UI should appear in a separate window")
-                    
+                    try:
+                        ipython.magic('gui qt')
+                        print("Qt event loop integrated with Jupyter - UI should appear in a separate window")
+                    except:
+                        ipython.enable_gui('qt')
+                        print("Qt event loop integrated with Jupyter - UI should appear in a separate window")
                     # Show the window (should already be visible, but making sure)
                     if hasattr(ui, 'win') and hasattr(ui.win, 'show'):
                         ui.win.show()
@@ -898,13 +914,13 @@ if __name__ == "__main__":
             "range": 5.0,
             "offset": 0.0,
             "enable": 1,
-            "coupling": DConsts.DwfAnalogCouplingDC,
+            "coupling": "dc",
         },
         2: {
             "range": 5.0,
             "offset": 0.0,
             "enable": 1,
-            "coupling": DConsts.DwfAnalogCouplingDC,
+            "coupling": "dc",
         },
         "scope": {
             "frequency": frequency,

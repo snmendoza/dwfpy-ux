@@ -1,5 +1,9 @@
-# dwfpy-ux
+# dwfpy-uxs
 Digilent Waveforms API facade with optional UIX
+
+While the WaveForms software is quite mature, more direct/programmatic communication with these devices might be needed for some experiments.
+This library is intended to provide both a lightweight display and communication interface to the oscilloscope.
+
 ![DigiScope GUI Example](docs/output.gif)
 ```python
 from DwfInterface import DigiScope
@@ -51,31 +55,40 @@ ds = DigiScope()
 # Configure oscilloscope parameters
 params = {
     1: {    
-        "range": 5.0,
-        "offset": 0.0,
-        "enable": 1,
-        "coupling": DConsts.DwfAnalogCouplingDC,
+        "range": 5.0, # ambipolar range relative to offset
+        "offset": 0.0, # offset from ground
+        "enable": 1, # Boolean
+        "coupling": "dc", # "ac", "dc", "gnd"
     },
     2: {
         "range": 5.0,
         "offset": 0.0,
         "enable": 1,
-        "coupling": DConsts.DwfAnalogCouplingDC,
+        "coupling": "dc",
     },
     "scope": {
-        "frequency": 1e6,
-        "samples": 8000,
+        "frequency": 1e6, #Sampling rate
+        "samples": 8000, #Number of samples to acquire
+                         # Acquisition time = samples / frequency
     },
     "trigger": {
-        "type": "edge",
-        "channel": 1,
-        "level": 2.0,
-        "polarity": "+",
-        "position": 0.01,
+        "type": "edge", # "edge", "pulse", "auto", other not implemented
+        "channel": 1, 
+        "level": 2.0, 
+        "position": 0.01, 
+        "hysteresis": 0.01, 
+        # for edge, pass channel, level, position, hysteresis, polarity (+/-)
+        # for pulse, pass channel, level, polarity (+/-)
+        # width, condition (>,<)
     },
     "wavegen": {
-        "waveform": "sine",
-        "frequency": 1e6,
+        "waveform": "sine", 
+        ### Implemented: 
+        #"triangle", "ramp", "dc", "noise", "pulse", "sine", #"square", 
+
+        ### Partially Implemented:
+        # "trap", "rampdown", "sinepower", #"sinena"
+        "frequency": 1e6, #
         "amplitude": 1.0,
         "offset": 0.0,
     }
@@ -98,37 +111,7 @@ Example for repeated acquisitions:
 ds = DigiScope()
 
 # Configure oscilloscope parameters
-params = {
-    1: {    
-        "range": 5.0,
-        "offset": 0.0,
-        "enable": 1,
-        "coupling": DConsts.DwfAnalogCouplingDC,
-    },
-    2: {
-        "range": 5.0,
-        "offset": 0.0,
-        "enable": 1,
-        "coupling": DConsts.DwfAnalogCouplingDC,
-    },
-    "scope": {
-        "frequency": 1e6,
-        "samples": 8000,
-    },
-    "trigger": {
-        "type": "edge",
-        "channel": 1,
-        "level": 2.0,
-        "polarity": "+",
-        "position": 0.01,
-    },
-    "wavegen": {
-        "waveform": "sine",
-        "frequency": 1e6,
-        "amplitude": 1.0,
-        "offset": 0.0,
-    }
-}
+params = {...}
 
 # Apply configuration
 ds.configure_all(params)
@@ -203,37 +186,7 @@ from DwfInterface.dwfconstants import DwfAnalogCouplingDC
 ds = DigiScope()
 
 # Configure oscilloscope parameters
-params = {
-    1: {    
-        "range": 5.0,
-        "offset": 0.0,
-        "enable": 1,
-        "coupling": DwfAnalogCouplingDC,
-    },
-    2: {
-        "range": 5.0,
-        "offset": 0.0,
-        "enable": 1,
-        "coupling": DwfAnalogCouplingDC,
-    },
-    "scope": {
-        "frequency": 1e5,
-        "samples": 30000,
-    },
-    "trigger": {
-        "type": "edge",
-        "channel": 1,
-        "level": 1.0,
-        "polarity": "+",
-        "position": 0.01,
-        "hysteresis": 0.01,
-    },
-    "wavegen": {
-        "waveform": "sine",
-        "frequency": 10,
-        "amplitude": 1.5,
-        "offset": 0.0,
-    }
+params = {....
 }
 ds.configure_all(params)
 
