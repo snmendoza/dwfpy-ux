@@ -1,8 +1,8 @@
 import sys
 import numpy
 from ctypes import *
-import dwfconstants as DConsts
-from DigiScopeGraph import OscilloscopeUI, get_qt_app
+from . import dwfconstants as DConsts
+from .DigiScopeGraph import OscilloscopeUI, get_qt_app
 import math
 import time
 import pyqtgraph as pg
@@ -168,7 +168,7 @@ class DigiScope:
         """Close the device"""
         dwf.FDwfDeviceClose(self.hdwf)
         # Close the UI if it exists
-        if self.ui is not None:
+        if hasattr(self, 'ui'):
             try:
                 self.ui.close()
             except:
@@ -264,26 +264,22 @@ class DigiScope:
         Returns:
             None
         """
-        # get info
-        #bsize_min = c_int()
-        #bsize_max = c_int()
-        #dwf.FDwfAnalogInBufferSizeInfo(self.hdwf, byref(bsize_min), byref(bsize_max)) #buffer min max size
-        #nbuffers = int(np.round(bsize_max.value / params["samples"]))
 
         # Set frequency and buffer size
         dwf.FDwfAnalogInFrequencySet(self.hdwf, c_double(params["frequency"])) #set frequency
         dwf.FDwfAnalogInBufferSizeSet(self.hdwf, c_int(params["samples"])) #set buffer size
         #dwf.FDwfAnalogInBuffersSet(self.hdwf, c_int(nbuffers)) #set num buffers
-        #self.NBuffers = c_int(nbuffers)
-        # get num buffers
-        #dwf.FDwfAnalogInBuffersGet(self.hdwf, byref(self.NBuffers))
 
-        # Set acquisition mode to single
-        #dwf.FDwfAnalogInAcquisitionModeSet(self.hdwf, DConsts.acqmodeSingle)
 
         # Configure the device
         dwf.FDwfAnalogInConfigure(self.hdwf, c_int(0), c_int(0))
-
+        # if has UI, update UI with new number of desired points
+        #reset limits
+        if hasattr(self, 'ui'):
+            if hasattr(self.ui, 'update_Npoints'):
+                self.ui.update_Npoints(params["samples"])
+            if hasattr(self.ui, 'reset_all_views'):
+                self.ui.reset_all_views()
     def configure_trigger(self, params):
         """
         Configure the oscilloscope trigger system.
@@ -555,27 +551,9 @@ class DigiScope:
         self.capture_index = 1
             
         # Wait for acquisition to complete
-        while True:
-            status = c_byte()
-            if dwf.FDwfAnalogInStatus(self.hdwf, c_int(1), byref(status)) != 1:
-                szError = create_string_buffer(512)
-                dwf.FDwfGetLastErrorMsg(szError);
-                print("failed to open device\n"+str(szError.value))
-                raise Exception("failed to open device")
-            if status.value == DConsts.DwfStateDone.value :
-                break
-            
-        #compile data
-        self.dwf.FDwfAnalogInStatusData(self.hdwf, 0, channel1, nSamples) # get channel 1 data
-        self.dwf.FDwfAnalogInStatusData(self.hdwf, 1, channel2, nSamples) # get channel 2 data
-        
-        
-        #convert to DF
-        df = pd.DataFrame({
-            'time': numpy.linspace(0, nSamples/frequency, nSamples),
-            'ch1': numpy.frombuffer(channel1, dtype=numpy.float64),
-            'ch2': numpy.frombuffer(channel2, dtype=numpy.float64)
-        })
+        self.await_acquisition()
+
+        df = self.import_current_data(channel1, channel2, nSamples, frequency)
         self.update_data_connectors(df)
 
         # Update last_data for UI access
@@ -626,26 +604,9 @@ class DigiScope:
                     display("Acquiring: {}/{}".format(i+1,num_captures))
                     clear_output(wait=True)
                 # Wait for acquisition to complete
-                while True:
-                    status = c_byte()
-                    if dwf.FDwfAnalogInStatus(self.hdwf, c_int(1), byref(status)) != 1:
-                        szError = create_string_buffer(512)
-                        dwf.FDwfGetLastErrorMsg(szError);
-                        print("failed to open device\n"+str(szError.value))
-                        raise Exception("failed to open device")
-                    if status.value == DConsts.DwfStateDone.value :
-                        break
-                
-                #compile data
-                self.dwf.FDwfAnalogInStatusData(self.hdwf, 0, channel1[i], nSamples) # get channel 1 data
-                self.dwf.FDwfAnalogInStatusData(self.hdwf, 1, channel2[i], nSamples) # get channel 2 data
-                df = pd.DataFrame({
-                'time': numpy.linspace(0, nSamples/frequency, nSamples),
-                'ch1': numpy.frombuffer(channel1[i], dtype=numpy.float64),
-                'ch2': numpy.frombuffer(channel2[i], dtype=numpy.float64)
-                })
+                self.await_acquisition()
+                df = self.import_current_data(channel1[i], channel2[i], nSamples, frequency)
                 stack_df.append(df)
-                self.update_data_connectors(df)
                 # Update last_data for UI access
                 self.last_data = stack
                 self.data_ready = True
@@ -688,25 +649,9 @@ class DigiScope:
                 self.dwf.FDwfAnalogInConfigure(self.hdwf, c_int(0), c_int(1))
                 
                 # Wait for acquisition to complete
-                while True:
-                    status = c_byte()
-                    if dwf.FDwfAnalogInStatus(self.hdwf, c_int(1), byref(status)) != 1:
-                        szError = create_string_buffer(512)
-                        dwf.FDwfGetLastErrorMsg(szError);
-                        print("failed to open device\n"+str(szError.value))
-                        raise Exception("failed to open device")
-                    if status.value == DConsts.DwfStateDone.value :
-                        break
-                
-                #compile data
-                self.dwf.FDwfAnalogInStatusData(self.hdwf, 0, channel1, nSamples) # get channel 1 data
-                self.dwf.FDwfAnalogInStatusData(self.hdwf, 1, channel2, nSamples) # get channel 2 data
-                df = pd.DataFrame({
-                'time': numpy.linspace(0, nSamples/frequency, nSamples),
-                'ch1': numpy.frombuffer(channel1, dtype=numpy.float64),
-                'ch2': numpy.frombuffer(channel2, dtype=numpy.float64)
-                })
-                self.update_data_connectors(df)
+                self.await_acquisition()
+                df = self.import_current_data(channel1, channel2, nSamples, frequency)
+
                 # Update last_data for UI access
                 self.last_data = df
                 self.data_ready = True
@@ -749,6 +694,52 @@ class DigiScope:
         # The calling code should call app.exec_() after this
         
         return self.ui  # Return UI object for caller's reference
+        
+    def jupyter_graph(self):
+        """
+        Display the oscilloscope UI in a separate window from Jupyter notebook
+        in a non-blocking way.
+        
+        This method handles Qt event integration with IPython event loop,
+        allowing the UI to be responsive without blocking the notebook.
+        """
+        # Create the UI
+        ui = self.graph()
+        
+        try:
+            # Try to use IPython's event loop integration
+            from IPython import get_ipython
+            ipython = get_ipython()
+            
+            if ipython is not None:
+                # Check if we're in a Jupyter QtConsole or Notebook
+                if hasattr(ipython, 'kernel'):
+                    # Enable GUI event loop integration
+                    ipython.magic('gui qt')
+                    print("Qt event loop integrated with Jupyter - UI should appear in a separate window")
+                    
+                    # Show the window (should already be visible, but making sure)
+                    if hasattr(ui, 'win') and hasattr(ui.win, 'show'):
+                        ui.win.show()
+                        
+                    return ui
+            
+            # Fallback if IPython integration didn't succeed
+            print("Note: For best results in Jupyter, run '%gui qt' in a cell before creating the UI")
+            print("UI window created - you may need to run ui.app.exec_() if window doesn't appear")
+            
+            # Try to show the window without blocking
+            if hasattr(ui, 'win') and hasattr(ui.win, 'show'):
+                ui.win.show()
+            self.ui = ui
+            return self.ui
+            
+        except ImportError:
+            print("IPython integration not available")
+            print("To use in Jupyter, run '%gui qt' in a cell before creating the UI")
+            print("Alternatively, run ui.app.exec_() to show the window (will block until closed)")
+            self.ui = ui
+            return self.ui
 
     def _run_event_loop(self, app):
         """
@@ -759,13 +750,65 @@ class DigiScope:
         if threading.current_thread() is not threading.main_thread():
             app.exec_()
 
-    def create_ui(self):
-        """Create the UI - maintained for backward compatibility."""
-        return self.graph()
 
     def set_data_connectors(self, data_connectors):
         self.data_connectors = data_connectors
-    
+
+    def await_acquisition(self):
+        """
+        Wait for the acquisition to complete.
+        Let ui be interactive with the user.
+        
+        This function polls the device status while keeping the UI responsive
+        by processing Qt events periodically.
+        
+        Returns:
+            None
+        """
+        ui_period = .016 # 60 Hz
+        t0 = time.time()
+        while True:
+            status = c_byte()
+            try:
+                if dwf.FDwfAnalogInStatus(self.hdwf, c_int(1), byref(status)) != 1:
+                    szError = create_string_buffer(512)
+                    dwf.FDwfGetLastErrorMsg(szError)
+                    print("failed to open device\n"+str(szError.value))
+                    raise Exception("failed to open device")
+            except KeyboardInterrupt:
+                print("Keyboard Interrupt")
+                return
+            #if done, breaks
+            if status.value == DConsts.DwfStateDone.value:
+                break
+                
+            t1 = time.time()
+            if t1 - t0 > ui_period:
+                t0 = t1
+                if hasattr(self, 'ui'):
+                    # Process Qt events to keep UI responsive
+                    if hasattr(self.ui, 'app') and self.ui.app is not None:
+                        self.ui.app.processEvents()
+            else:
+                time.sleep(0.01)  # Small sleep to prevent CPU hogging
+
+    def import_current_data(self, buf1, buf2, nSamples, frequency):
+        """
+        Import the current data from the device.
+        """            
+        #compile data
+        self.dwf.FDwfAnalogInStatusData(self.hdwf, 0, buf1, nSamples) # get channel 1 data
+        self.dwf.FDwfAnalogInStatusData(self.hdwf, 1, buf2, nSamples) # get channel 2 data
+        
+        #convert to DF
+        df = pd.DataFrame({
+            'time': numpy.linspace(0, nSamples/frequency, nSamples),
+            'ch1': numpy.frombuffer(buf1, dtype=numpy.float64),
+            'ch2': numpy.frombuffer(buf2, dtype=numpy.float64)
+        })
+        self.update_data_connectors(df)
+        return df
+        
     def __del__(self):
         self.close()
         

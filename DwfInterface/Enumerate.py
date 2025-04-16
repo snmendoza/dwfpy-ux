@@ -1,12 +1,13 @@
 """
-   DWF Python Example
-   Author:  Digilent, Inc.
-   Revision:  2019-07-24
+DwfInterface.Enumerate - Device enumeration tool for Digilent Waveforms SDK
 
-   Requires:                       
-       Python 2.7, 3
-   Description:
-   Device detection troubleshooting.
+This module provides utilities for detecting and troubleshooting Digilent hardware devices.
+It can be run as a standalone script to list all connected Digilent devices.
+
+When imported as part of the DwfInterface package, it helps with device detection and enumeration.
+
+Usage as standalone script:
+    python -m DwfInterface.Enumerate
 """
 
 from ctypes import *

@@ -5,11 +5,7 @@ Digilent Waveforms API facade with optional UIX
 `dwfpy-ux` provides a Python interface to Digilent oscilloscope hardware using the Waveforms SDK. This library simplifies device connection, configuration, and data acquisition for Digilent oscilloscope devices.
 
 ## Features
-- Easy device connection and configuration
-- Support for various trigger modes (edge, pulse, auto)
-- Channel configuration with customizable ranges, offsets, and coupling
-- Single and continuous acquisition modes
-- Waveform generation for testing
+- Easy configuration with a single dictionary passed to `configure_all()`
 - Data export as pandas DataFrames
 - Real-time data visualization GUI for monitoring oscilloscope signals
 
@@ -183,6 +179,68 @@ The GUI displays real-time waveforms from both channels with the following featu
 - Auto-scaling for optimal signal viewing
 - Synchronized x-axis between both channels
 - Efficient rendering with configurable sample downsampling
+
+## Recommended Usage: Jupyter Notebook
+For interactive development and experimentation, I recommend using `dwfpy-ux` within Jupyter notebooks which provides a convenient environment for configuring and controlling your Digilent oscilloscope:
+
+```python
+import sys
+import os
+# Import from package
+from DwfInterface import DigiScope
+# Import required constants
+from DwfInterface.dwfconstants import DwfAnalogCouplingDC
+
+# Create a DigiScope instance
+ds = DigiScope()
+
+# Configure oscilloscope parameters
+params = {
+    1: {    
+        "range": 5.0,
+        "offset": 0.0,
+        "enable": 1,
+        "coupling": DwfAnalogCouplingDC,
+    },
+    2: {
+        "range": 5.0,
+        "offset": 0.0,
+        "enable": 1,
+        "coupling": DwfAnalogCouplingDC,
+    },
+    "scope": {
+        "frequency": 1e5,
+        "samples": 30000,
+    },
+    "trigger": {
+        "type": "edge",
+        "channel": 1,
+        "level": 1.0,
+        "polarity": "+",
+        "position": 0.01,
+        "hysteresis": 0.01,
+    },
+    "wavegen": {
+        "waveform": "sine",
+        "frequency": 10,
+        "amplitude": 1.5,
+        "offset": 0.0,
+    }
+}
+ds.configure_all(params)
+
+# Launch the UI within Jupyter
+ds.jupyter_graph()
+
+# Start continuous acquisition
+# (this will show live data in the graph window)
+ds.acquire_continuous()
+
+# Alternatively, capture a series of acquisitions
+series = ds.acquire_series(20)
+```
+
+The `jupyter_graph()` method integrates the Qt event loop with Jupyter's event loop, allowing you to interact with both the notebook and the oscilloscope UI simultaneously.
 
 ## License
 None

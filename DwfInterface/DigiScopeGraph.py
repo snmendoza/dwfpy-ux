@@ -1,6 +1,6 @@
 #imports
 import sys
-from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget
+from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget, QLabel, QPushButton
 from PyQt5.QtCore import QTimer
 from PyQt5.QtGui import QPen, QColor
 import pyqtgraph as pg
@@ -10,6 +10,8 @@ from time import sleep
 from math import sin
 from pglive.sources.live_plot import LiveLinePlot
 from pglive.sources.live_plot_widget import LivePlotWidget
+import datetime
+import numpy as np
 
 
 # Global variable to hold QApplication instance
@@ -50,9 +52,50 @@ class OscilloscopeUI(QMainWindow):
             DataConnector(self.ch2_plot, update_rate=10, plot_rate=30, ignore_auto_range=True)
         ]
 
+        # Fix timestamp update issue by directly connecting to signals
+        for connector in self.data_connectors:
+            # Connect to the signal that's emitted when data is updated
+            connector.sig_new_data.connect(lambda *args: self.update_timestamp())
+
         scope.set_data_connectors(self.data_connectors)
         self.running = False
         self.start()
+
+    def update_Npoints(self, Npoints):
+        """Update the number of points and downsampling in the data connectors
+        
+        This updates:
+        1. max_points in the data connectors
+        2. downsampling rate in the plot widgets
+        3. Refreshes the data visualization
+        """
+        # Update downsampling rate - higher points = higher ds value
+        self.ds = max(1, int(Npoints / 1000))
+        
+        # Update plot widget downsampling settings
+        for plot_widget in [self.plot_widget_ch1, self.plot_widget_ch2]:
+            plot_widget.setDownsampling(ds=self.ds, auto=True, mode='mean')
+        
+        # Store current data to restore after resizing
+        with self.lock:
+            # Extract current data from the connectors
+            data_x = [list(conn.x) for conn in self.data_connectors]
+            data_y = [list(conn.y) for conn in self.data_connectors]
+            
+            # Update the max_points property in the connectors
+            for connector in self.data_connectors:
+                connector.max_points = Npoints
+            
+            # Restore data if there was any
+            for i, connector in enumerate(self.data_connectors):
+                if data_x[i] and data_y[i]:
+                    # Use cb_set_data to restore the data with new buffer sizes
+                    connector.cb_set_data(data_y[i], data_x[i])
+
+    def update_timestamp(self):
+        """Update the timestamp label with the current time"""
+        current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        self.timestamp_label.setText(f"Last Update: {current_time}")
 
     def setup_ui_elements(self):
         """Setup. two charts with a shared x axis, ch1,ch2"""
@@ -61,6 +104,11 @@ class OscilloscopeUI(QMainWindow):
         
         # Create a QVBoxLayout
         layout = QVBoxLayout()
+        
+        # Add timestamp label at the top
+        self.timestamp_label = QLabel("Last Update: --")
+        self.timestamp_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(self.timestamp_label)
         
         # Create two plot widgets with pglive
         self.plot_widget_ch1 = LivePlotWidget(title="Channel 1")
@@ -84,7 +132,7 @@ class OscilloscopeUI(QMainWindow):
             # Set proper mouse interaction mode
             view_box.setMouseMode(view_box.RectMode)
             # Improve performance with limited range updates
-            view_box.setLimits(yMin=-10, yMax=10)
+            #sview_box.setLimits(yMin=-10, yMax=10)
         
         # Create the plots with smoother line rendering
         from PyQt5.QtCore import Qt
@@ -111,6 +159,20 @@ class OscilloscopeUI(QMainWindow):
         layout.addWidget(self.plot_widget_ch1)
         layout.addWidget(self.plot_widget_ch2)
         
+        # Create a single reset button that resets both views
+        reset_button = QPushButton("Reset Views")
+        reset_button.setFixedWidth(100)  # Make button small and fixed width
+        reset_button.clicked.connect(self.reset_all_views)
+        
+        # Create a horizontal layout to center the button
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        button_layout.addWidget(reset_button)
+        button_layout.addStretch()
+        
+        # Add button layout below the graphs
+        layout.addLayout(button_layout)
+        
         # Create central widget to hold the layout
         central_widget = QWidget()
         central_widget.setLayout(layout)
@@ -133,6 +195,11 @@ class OscilloscopeUI(QMainWindow):
             DataConnector(self.ch2_plot, max_points=1000, update_rate=5, plot_rate=30, ignore_auto_range=True)
         ]
         
+        # Fix timestamp update issue by directly connecting to signals in reset_plots too
+        for connector in self.data_connectors:
+            # Connect to the signal that's emitted when data is updated
+            connector.sig_new_data.connect(lambda *args: self.update_timestamp())
+        
         # Reapply the pen configuration for smooth rendering
         from PyQt5.QtCore import Qt
         yellow_pen = QPen(QColor(255, 255, 0))
@@ -148,5 +215,63 @@ class OscilloscopeUI(QMainWindow):
         
         # Update the scope with the new connectors
         self.scope.set_data_connectors(self.data_connectors)
+
+    def reset_all_views(self):
+        """Reset the view limits for both channels"""
+        # Completely reset view for channel 1
+        view_box1 = self.plot_widget_ch1.getPlotItem().getViewBox()
+        view_box1.enableAutoRange(x=True, y=True)
+        view_box1.setAutoVisible(x=True, y=True)
+        view_box1.autoRange()  # Force immediate auto-range
+
+        # Completely reset view for channel 2
+        view_box2 = self.plot_widget_ch2.getPlotItem().getViewBox()
+        view_box2.enableAutoRange(x=True, y=True)
+        view_box2.setAutoVisible(x=True, y=True)
+        view_box2.autoRange()  # Force immediate auto-range
+
+
+# Test code to run the UI with simulated data
+if __name__ == "__main__":
+    class SimulatedScope:
+        """Simple class to simulate a scope for testing the UI"""
+        def __init__(self):
+            self.data_connectors = None
+            self.x = 0
+            self.timer = QTimer()
+            self.timer.timeout.connect(self.generate_data)
+            
+        def set_data_connectors(self, connectors):
+            self.data_connectors = connectors
+            # Start generating data when connectors are set
+            self.timer.start(50)  # Update more frequently (every 50ms) to test timestamp updating
+            
+        def generate_data(self):
+            if self.data_connectors is None:
+                return
+                
+            # Generate some sample data - sine waves with different frequencies
+            x_values = np.linspace(self.x, self.x + 0.1, 10)
+            ch1_data = np.sin(2 * np.pi * 1.0 * x_values)
+            ch2_data = 0.5 * np.sin(2 * np.pi * 2.0 * x_values + 0.5)
+            
+            # Push data to both channels
+            for i, x in enumerate(x_values):
+                if self.data_connectors[0]:
+                    self.data_connectors[0].cb_append_data_point(y=ch1_data[i], x=x)
+                if self.data_connectors[1]:
+                    self.data_connectors[1].cb_append_data_point(y=ch2_data[i], x=x)
+            
+            self.x += 0.1
+    
+    # Create the simulated scope
+    scope = SimulatedScope()
+    
+    # Create the UI
+    app = get_qt_app()
+    ui = OscilloscopeUI(scope)
+    
+    # Start the Qt event loop
+    sys.exit(app.exec_())
 
 
