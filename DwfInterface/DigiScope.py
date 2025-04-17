@@ -2,12 +2,14 @@ import sys
 import numpy
 from ctypes import *
 from . import dwfconstants as DConsts
-from .DigiScopeGraph import OscilloscopeUI, get_qt_app
+from .DigiScopeGraph import OscilloscopeUI, get_qt_app, SettingTable
 import math
 import time
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from IPython.display import display, clear_output
+import json
+import ipywidgets as widgets
 import pandas as pd
 import numpy as np
 import threading
@@ -21,41 +23,7 @@ elif sys.platform.startswith("darwin"):
 else:
     dwf = cdll.LoadLibrary("libdwf.so")
 
-
-
-
-class DigiScope:
-    """
-    DigiScope provides an interface to Digilent oscilloscope hardware.
-    
-    This class handles device connection, configuration, and data acquisition
-    from Digilent oscilloscope devices using the Waveforms SDK. It supports
-    various trigger modes, channel configurations, and both single and continuous
-    acquisition modes.
-    
-    The class also provides a graphical user interface for real-time visualization
-    of acquired waveforms.
-    """
-
-    def __init__(self):
-        """
-        Initialize the DigiScope object and connect to the device.
-        
-        Sets up the hardware connection, initializes default parameters for
-        channels, scope settings, and trigger configuration. Creates the UI
-        and prepares the device for data acquisition.
-        """
-        self.dwf = dwf
-        self.DConsts = DConsts
-        self.hdwf = c_int()
-        self.sts = c_byte()
-        self.rgdSamples = (c_double*8192)()
-        self.open()
-        self.NBuffers = 0
-        self.data_connectors = None
-
-        #params, channel-specific and global
-        self.params = {
+defaults = {
             1: {    
                 "range": 5.0,
                 "offset": 0.0,
@@ -86,6 +54,44 @@ class DigiScope:
                 "amplitude": 1.5
             }
         }
+
+class DigiScope:
+    """
+    DigiScope provides an interface to Digilent oscilloscope hardware.
+    
+    This class handles device connection, configuration, and data acquisition
+    from Digilent oscilloscope devices using the Waveforms SDK. It supports
+    various trigger modes, channel configurations, and both single and continuous
+    acquisition modes.
+    
+    The class also provides a graphical user interface for real-time visualization
+    of acquired waveforms.
+    """
+
+    def __init__(self, params_path=None,params=None):
+        """
+        Initialize the DigiScope object and connect to the device.
+        
+        Sets up the hardware connection, initializes default parameters for
+        channels, scope settings, and trigger configuration. Creates the UI
+        and prepares the device for data acquisition.
+        """
+        self.dwf = dwf
+        self.DConsts = DConsts
+        self.hdwf = c_int()
+        self.sts = c_byte()
+        self.rgdSamples = (c_double*8192)()
+        self.open()
+        self.NBuffers = 0
+        self.data_connectors = None
+
+        #params, channel-specific and global
+        if params_path is not None:
+            self.load_params(params_path)
+        elif params is not None:
+            self.params = params
+        else:
+            self.params = defaults
         self.configure_all(self.params)
         self.is_acquiring = False
         self.latest_data = None
@@ -98,8 +104,8 @@ class DigiScope:
         import numpy as np
         self.last_data = pd.DataFrame({
             'time': np.array([]),
-            'ch1': np.array([]),
-            'ch2': np.array([])
+            'ch1volts': np.array([]),
+            'ch2volts': np.array([])
         })
         
         # UI functionality temporarily disabled
@@ -696,8 +702,8 @@ class DigiScope:
         """
         if self.data_connectors is not None:
             try:
-                self.data_connectors[0].cb_set_data(df['ch1'], df['time'])
-                self.data_connectors[1].cb_set_data(df['ch2'], df['time'])
+                self.data_connectors[0].cb_set_data(df['ch1volts'], df['time'])
+                self.data_connectors[1].cb_set_data(df['ch2volts'], df['time'])
             except Exception as e:
                 # Safely handle errors that might occur due to threading issues
                 print(f"Error updating data connectors: {e}")
@@ -774,7 +780,52 @@ class DigiScope:
         if threading.current_thread() is not threading.main_thread():
             app.exec_()
 
+    def load_params(self, params,  display_editable=False):
+        """
+        If params is a path, load params dictionary from Json file, configure scope.
+        If params is a dictionary, use it as the params dictionary, configure scope.
 
+        If display_editable is True, display params in a nice jupyter table,
+        allow editing/saving back to file
+        
+        Parameters:
+            params_path (str): Path to the JSON file containing parameters
+            display_editable (bool): If True, display an editable table in Jupyter
+            
+        The JSON structure should have top-level keys like:
+            - 1, 2: Channel 1 and 2 settings
+            - scope: General scope settings
+            - trigger: Trigger settings
+            - wavegen: Wave generator settings
+        """
+        if isinstance(params, str):
+            # Load parameters from JSON file
+            path = params
+            with open(path, 'r') as f:
+                params = json.load(f)
+        else:
+            #use default path
+            path = "DwfSettings.json"
+            params = params
+        
+        try:
+            self.configure_all(params)
+        except Exception as e:
+            print(f"Error configuring all: {e}")
+            return
+        
+        if display_editable:
+            table = SettingTable(self,path)
+            table.display()
+        return self.params
+            
+    def save_params(self, path):
+        """Save the current parameters to a JSON file."""
+        with open(path, 'w') as f:
+            json.dump(self.params, f, indent=4)
+        print(f"Parameters saved to {path}")
+        
+        
     def set_data_connectors(self, data_connectors):
         self.data_connectors = data_connectors
 
@@ -827,8 +878,8 @@ class DigiScope:
         #convert to DF
         df = pd.DataFrame({
             'time': numpy.linspace(0, nSamples/frequency, nSamples),
-            'ch1': numpy.frombuffer(buf1, dtype=numpy.float64),
-            'ch2': numpy.frombuffer(buf2, dtype=numpy.float64)
+            'ch1volts': numpy.frombuffer(buf1, dtype=numpy.float64),
+            'ch2volts': numpy.frombuffer(buf2, dtype=numpy.float64)
         })
         self.update_data_connectors(df)
         return df

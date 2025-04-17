@@ -13,13 +13,14 @@ except ImportError:
 import pyqtgraph as pg
 from pglive.sources.data_connector import DataConnector
 from threading import Thread, Lock
+import json 
 from time import sleep
 from math import sin
 from pglive.sources.live_plot import LiveLinePlot
 from pglive.sources.live_plot_widget import LivePlotWidget
 import datetime
 import numpy as np
-
+import ipywidgets as widgets
 
 # Global variable to hold QApplication instance
 _app = None
@@ -34,7 +35,81 @@ def get_qt_app():
             _app = QApplication(sys.argv)
     return _app
 
-
+class SettingTable():
+    """UI element for jupyter notebook to display and edit oscilloscope settings,
+    read/write to json file
+    call:
+    table = SettingTable(scope)
+    table.display()
+    """
+    def __init__(self, scope, params_path=None):
+        self.scope = scope
+        self.submit_func = scope.configure_all
+        self.save_func = scope.save_params
+        self.params_path = params_path
+        self.params = scope.params
+        self.param_widgets = {}
+        self.tab = widgets.Tab()
+        self.children = []
+        self.tab_titles = []
+        
+    def unpile_params(self):
+        """Generate widget tree from the params dictionary"""
+        params = self.scope.params
+        for section_key, section_value in params.items():
+            section_widgets = []
+            for param_key, param_value in section_value.items():
+                if isinstance(param_value, bool):
+                    widget = widgets.Checkbox(value=param_value, description=param_key)
+                elif isinstance(param_value, (int, float)):
+                    widget = widgets.FloatText(value=param_value, description=param_key)
+                else:
+                    widget = widgets.Text(value=str(param_value), description=param_key)
+                section_widgets.append(widget)
+            self.children.append(widgets.VBox(section_widgets))
+            self.tab_titles.append(str(section_key))
+        
+    def pile_params(self):
+        """Generate new params dictionary from the  widget values"""
+        params = {}
+        for section_key, section_value in self.param_widgets.items():
+            params[section_key] = {}
+            for param_key, widget in section_value.items():
+                params[section_key][param_key] = widget.value
+        self.params = params
+        return params
+    
+    def display(self):
+        """display the setting table in jupyter notebook"""
+        self.unpile_params()
+        
+        # Set the tab children and titles
+        self.tab.children = self.children
+        for i, title in enumerate(self.tab_titles):
+            self.tab.set_title(i, title)
+        
+        # Create buttons for actions
+        self.save_button = widgets.Button(description="Save")
+        self.apply_button = widgets.Button(description="Apply")
+        
+        # Define button callbacks
+        self.save_button.on_click(self.on_save_clicked)
+        self.apply_button.on_click(self.on_apply_clicked)
+        
+        # Create a button box
+        self.button_box = widgets.HBox([self.apply_button, self.save_button])
+        
+    def on_save_clicked(self, b):
+        """Save the current params dictionary to the json file"""
+        self.pile_params()
+        self.scope.save_params(self.params_path)
+            
+    def on_apply_clicked(self, b):
+        """Regenerate params dictionary from the widget values, call
+        configure_all to apply to scope"""
+        self.pile_params()
+        self.scope.configure_all(self.params)
+    
 class OscilloscopeUI(QMainWindow):
     """usage:
     scope.ui = OscilloscopeUI(scope)
@@ -104,7 +179,7 @@ class OscilloscopeUI(QMainWindow):
         """Update the timestamp label with the current time"""
         current_time = datetime.datetime.now()
         
-        # Initialize last_timestamp if it doesn't exist
+        # Calculate time difference in seconds
         if not hasattr(self, 'last_timestamp'):
             self.last_timestamp = current_time
             time_diff_sec = 0
@@ -112,12 +187,12 @@ class OscilloscopeUI(QMainWindow):
             # Calculate time difference in seconds
             time_diff_sec = (current_time - self.last_timestamp).total_seconds()
             
-        # Update the last timestamp
-        self.last_timestamp = current_time
-        
         # Format for display
-        formatted_time = current_time.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        formatted_time = current_time.strftime("%Y-%m-%d %H:%M:%S.%f")[:-5]
         self.timestamp_label.setText(f"Last Update: {formatted_time} ({time_diff_sec:.3f}s)")
+        
+        # Update the last timestamp after displaying the difference
+        self.last_timestamp = current_time
 
     def setup_ui_elements(self):
         """Setup. two charts with a shared x axis, ch1,ch2"""

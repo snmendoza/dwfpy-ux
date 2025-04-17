@@ -1,0 +1,31 @@
+{
+    "1": {
+        "range": 5.0,
+        "offset": 0.0,
+        "enable": 1,
+        "coupling": "dc"
+    },
+    "2": {
+        "range": 5.0,
+        "offset": 0.0,
+        "enable": 1,
+        "coupling": "dc"
+    },
+    "scope": {
+        "frequency": 1000000.0,
+        "samples": 8000000
+    },
+    "trigger": {
+        "type": "auto",
+        "channel": 1,
+        "level": 2.0,
+        "polarity": "+",
+        "position": 0.01
+    },
+    "wavegen": {
+        "waveform": "sine",
+        "frequency": 20,
+        "offset": 0.0,
+        "amplitude": 1.5
+    }
+}

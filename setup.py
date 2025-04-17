@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="dwfpy-ux",
-    version="0.3.6",
+    version="0.3.8",
     author="Sean Mendoza",
     author_email="sean.mendoza@mac.com",
     description="Digilent Waveforms API facade with optional UIX",
