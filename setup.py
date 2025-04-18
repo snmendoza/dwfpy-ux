@@ -1,8 +1,8 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="dwfpy-ux",
-    version="0.3.8",
+    name="dwfpy_ux",
+    version="0.3.9",
     author="Sean Mendoza",
     author_email="sean.mendoza@mac.com",
     description="Digilent Waveforms API facade with optional UIX",
@@ -23,5 +23,6 @@ setup(
         "pyqtgraph>=0.13.0",
         "pglive",
         "ipython>=7.0.0",
+        "ipywidgets>=7.0.0",
     ],
 ) 

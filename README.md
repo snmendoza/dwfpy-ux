@@ -1,4 +1,4 @@
-# dwfpy-uxs
+# dwfpy_ux
 Digilent Waveforms API facade with optional UIX
 
 While the WaveForms software is quite mature, more direct/programmatic communication with these devices might be needed for some experiments.
@@ -14,7 +14,7 @@ ds.acquire_continuous()
 ```
 
 ## Overview
-`dwfpy-ux` provides a Python interface to Digilent oscilloscope hardware using the Waveforms SDK. This library simplifies device connection, configuration, and data acquisition for Digilent oscilloscope devices.
+`dwfpy_ux` provides a Python interface to Digilent oscilloscope hardware using the Waveforms SDK. This library simplifies device connection, configuration, and data acquisition for Digilent oscilloscope devices.
 
 ## Features
 - Easy configuration with a single dictionary passed to `configure_all()`
@@ -34,13 +34,13 @@ ds.acquire_continuous()
 1. Install the Digilent Waveforms SDK from [Digilent's website](https://digilent.com/reference/software/waveforms/waveforms-3/start)
 2. Install the package using pip:
 ```
-pip install dwfpy-ux
+pip install dwfpy_ux
 ```
 
 Or install from source:
 ```
-git clone https://github.com/yourusername/dwfpy-ux.git
-cd dwfpy-ux
+git clone https://github.com/snmendoza/dwfpy_ux.git
+cd dwfpy_ux
 pip install -e .
 ```
 
@@ -172,7 +172,7 @@ The GUI displays real-time waveforms from both channels with the following featu
 - Efficient rendering with configurable sample downsampling
 
 ## Recommended Usage: Jupyter Notebook
-For interactive development and experimentation, I recommend using `dwfpy-ux` within Jupyter notebooks which provides a convenient environment for configuring and controlling your Digilent oscilloscope:
+For interactive development and experimentation, I recommend using `dwfpy_ux` within Jupyter notebooks which provides a convenient environment for configuring and controlling your Digilent oscilloscope:
 
 ```python
 import sys

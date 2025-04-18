@@ -1,20 +1,16 @@
 import sys
-import numpy
+import numpy as np
 from ctypes import *
 from . import dwfconstants as DConsts
 from .DigiScopeGraph import OscilloscopeUI, get_qt_app, SettingTable
-import math
 import time
-import pyqtgraph as pg
-from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from IPython.display import display, clear_output
 import json
 import ipywidgets as widgets
 import pandas as pd
-import numpy as np
 import threading
-
-import datetime
+import traceback
+import os
 
 if sys.platform.startswith("win"):
     dwf = cdll.dwf
@@ -79,10 +75,7 @@ class DigiScope:
         self.dwf = dwf
         self.DConsts = DConsts
         self.hdwf = c_int()
-        self.sts = c_byte()
-        self.rgdSamples = (c_double*8192)()
         self.open()
-        self.NBuffers = 0
         self.data_connectors = None
 
         #params, channel-specific and global
@@ -93,33 +86,17 @@ class DigiScope:
         else:
             self.params = defaults
         self.configure_all(self.params)
-        self.is_acquiring = False
-        self.latest_data = None
-        self.data_ready = False
         self.capture_index = 0
-        self.capture_time = 0.0
     
         # Initialize last_data with empty arrays for time, ch1, and ch2
-        import pandas as pd
-        import numpy as np
         self.last_data = pd.DataFrame({
             'time': np.array([]),
             'ch1volts': np.array([]),
             'ch2volts': np.array([])
         })
-        
-        # UI functionality temporarily disabled
+        # UI functionality needs to be initialized after the device is opened
         self.ui = None
-        """
-        # Create UI only if we're in an environment that supports it
-        self.ui = None
-        try:
-            # Check if we're in a GUI-capable environment
-            if QtWidgets.QApplication.instance() is not None:
-                self.ui = DigiScopeUI(self, self.params)
-        except Exception as e:
-            print(f"UI initialization skipped: {e}")
-        """
+        self.table = None
 
     def open(self):
         """
@@ -135,30 +112,43 @@ class DigiScope:
         # Try to open the device with multiple attempts
         max_attempts = 5
         attempt = 0
+        
+        # Display initial connection attempt
+        display("Attempting to connect to Digilent device...")
+        
         while attempt < max_attempts:
             dwf.FDwfDeviceOpen(c_int(-1), byref(self.hdwf))
             if self.hdwf.value != DConsts.hdwfNone.value:
                 # Successfully opened
+                display("Successfully connected to device")
+                clear_output(wait=True)
                 return
             
             # Failed to open, check if it's because device is busy
             szError = create_string_buffer(512)
             dwf.FDwfGetLastErrorMsg(szError)
             error_msg = str(szError.value)
-            print(f"Attempt {attempt+1}/{max_attempts}: {error_msg}")
+            
+            # Update the existing output instead of creating new lines
+            display(f"Connection attempt {attempt+1}/{max_attempts}: {error_msg}")
             
             if "Devices are busy" in error_msg:
-                # Wait before trying again
-                print(f"Device busy, waiting 2 seconds before retry...")
+                # Wait before trying again - this sleep is necessary for device operation
                 time.sleep(2)
                 attempt += 1
+                try:
+                    self.dwf.FDwfDeviceCloseAll()
+                except:
+                    pass
             else:
                 # Different error, don't retry
-                print("Failed to open device with error: " + error_msg)
+                clear_output(wait=True)
+                display("Failed to open device with error: " + error_msg)
                 raise Exception(error_msg)
         
         # If we get here, we've exhausted all attempts
-        print("Failed to open device after multiple attempts. Please close any other applications using the device.")
+        clear_output(wait=True)
+        display("Failed to open device after multiple attempts. Please close any other applications using the device.")
         quit()
 
     def close(self):
@@ -199,9 +189,9 @@ class DigiScope:
         if "scope" in params:
             self.params["scope"].update(params["scope"])
 
-        for channel in [1, 2]:
+        for channel in [1, 2,"1","2"]: #accepts int or str
             if channel in params:
-                self.params[channel].update(params[channel])
+                self.params[int(channel)].update(params[channel])
 
         if "trigger" in params:
             self.params["trigger"].update(params["trigger"])
@@ -218,7 +208,7 @@ class DigiScope:
         self.configure_scope(self.params["scope"])
 
         # Then configure each channel
-        for channel in [1, 2]:
+        for channel in [1, 2]: # only ints
             if channel in self.params:
                 self.configure_channel(channel, self.params[channel])
 
@@ -248,16 +238,21 @@ class DigiScope:
             "ac": DConsts.DwfAnalogCouplingAC,
             "dc": DConsts.DwfAnalogCouplingDC
         }
+        self.validate_kwargs(couplings, params["coupling"])
+        zero_ix_channel = c_int(int(channel-1))
         # Enable the channel first
-        dwf.FDwfAnalogInChannelEnableSet(self.hdwf, c_int(channel-1), c_int(params["enable"]))
+        dwf.FDwfAnalogInChannelEnableSet(self.hdwf, zero_ix_channel, c_int(int(params["enable"])))
 
         # Set range and offset
-        dwf.FDwfAnalogInChannelRangeSet(self.hdwf, c_int(channel-1), c_double(params["range"]))
-        dwf.FDwfAnalogInChannelOffsetSet(self.hdwf, c_int(channel-1), c_double(params["offset"]))
+        dwf.FDwfAnalogInChannelRangeSet(self.hdwf, zero_ix_channel, c_double(params["range"]))
+        dwf.FDwfAnalogInChannelOffsetSet(self.hdwf, zero_ix_channel, c_double(params["offset"]))
 
         # Set coupling
-        dwf.FDwfAnalogInChannelCouplingSet(self.hdwf, c_int(channel-1), couplings[params["coupling"].lower()])
-
+        coupling = params["coupling"].lower()
+        if coupling in couplings:
+            dwf.FDwfAnalogInChannelCouplingSet(self.hdwf, zero_ix_channel, couplings[coupling])
+        else:
+            raise ValueError(f"Invalid coupling: {coupling}")
 
                 
     def configure_scope(self, params):
@@ -277,9 +272,8 @@ class DigiScope:
 
         # Set frequency and buffer size
         dwf.FDwfAnalogInFrequencySet(self.hdwf, c_double(params["frequency"])) #set frequency
-        dwf.FDwfAnalogInBufferSizeSet(self.hdwf, c_int(params["samples"])) #set buffer size
+        dwf.FDwfAnalogInBufferSizeSet(self.hdwf, c_int(int(params["samples"]))) #set buffer size
         #dwf.FDwfAnalogInBuffersSet(self.hdwf, c_int(nbuffers)) #set num buffers
-
 
         # Configure the device
         dwf.FDwfAnalogInConfigure(self.hdwf, c_int(0), c_int(0))
@@ -325,25 +319,44 @@ class DigiScope:
             dwf.FDwfAnalogInFrequencyGet(self.hdwf, byref(frequency))
             trigger_position_seconds = (0.5-params["position"]) * (buffer_size.value / frequency.value)
             dwf.FDwfAnalogInTriggerPositionSet(self.hdwf, c_double(trigger_position_seconds))
-
+        if "channel" in params:
+            dwf.FDwfAnalogInTriggerChannelSet(self.hdwf, c_int(int(params["channel"]-1)))
+        if "level" in params:
+            dwf.FDwfAnalogInTriggerLevelSet(self.hdwf, c_double(params["level"]))
+        if "polarity" in params:
+            dwf.FDwfAnalogInTriggerConditionSet(self.hdwf, params["polarity"])
         ## set params for specific trigger types
-        if params["type"] == "edge":
-            self.set_edge_trigger(params["channel"], params["level"], \
-                                  params["polarity"])
-        elif params["type"] == "pulse":
-            self.set_pulse_trigger(params["channel"], params["level"], \
-                                   params["polarity"], params["width"], \
-                                   params["condition"])
-        elif params["type"] == "auto":
-            # Set auto trigger with a reasonable timeout
+
+        # Map for shared keywords
+        cond = {"+": DConsts.DwfTriggerSlopeRise, 
+                 "-": DConsts.DwfTriggerSlopeFall,
+                 "=": DConsts.DwfTriggerSlopeEither}
+        
+        # Set auto trigger
+        if params["type"] == "auto":
             dwf.FDwfAnalogInTriggerAutoTimeoutSet(self.hdwf, c_double(1.0))  # 1 second timeout
             dwf.FDwfAnalogInTriggerSourceSet(self.hdwf, DConsts.trigsrcNone)
+            return
+        
+        # if not auto, disable auto trigger
+        else:
+            dwf.FDwfAnalogInTriggerAutoTimeoutSet(self.hdwf, c_double(0))
+            self.validate_kwargs(cond, params["polarity"])
+            dwf.FDwfAnalogInTriggerConditionSet(self.hdwf, cond[params["polarity"]])
+        
+        # set edge trigger
+        if params["type"] == "edge":
+            self.set_edge_trigger()
+        elif params["type"] == "pulse":
+            self.set_pulse_trigger(params["width"], \
+                                   params["condition"])
+        else:
+            raise ValueError(f"Invalid trigger type: {params['type']}")
+            
         # Apply the configuration to make sure all settings take effect
         dwf.FDwfAnalogInConfigure(self.hdwf, c_int(0), c_int(1))
 
-
-
-    def set_edge_trigger(self, channel=1, level=2.0, polarity="+"):
+    def set_edge_trigger(self):
         """
         Configure an edge trigger on a specific channel.
         
@@ -357,41 +370,12 @@ class DigiScope:
         Returns:
             None
         """
-        # Try using the proper constants for edge triggering with enhanced hysteresis
-        if polarity == "+":
-            slope = DConsts.DwfTriggerSlopeRise
-        elif polarity == "-":
-            slope = DConsts.DwfTriggerSlopeFall
-        else:
-            slope = DConsts.DwfTriggerSlopeEither
-
-        
-        # First reset all trigger settings to defaults
-        dwf.FDwfAnalogInTriggerChannelSet(self.hdwf, c_int(0))  # Default to first channel
-        dwf.FDwfAnalogInTriggerTypeSet(self.hdwf, c_int(0))     # Default to edge trigger
-        dwf.FDwfAnalogInTriggerConditionSet(self.hdwf, c_int(0)) # Default to rising edge
-        dwf.FDwfAnalogInTriggerLevelSet(self.hdwf, c_double(0)) # Default trigger level
-        
-        # Disable auto trigger to ensure we only trigger on the specified condition
-        dwf.FDwfAnalogInTriggerAutoTimeoutSet(self.hdwf, c_double(0))
-        
         # Set trigger source to analog in detector
         dwf.FDwfAnalogInTriggerSourceSet(self.hdwf, DConsts.trigsrcDetectorAnalogIn)
         
         # Make sure we're in edge trigger mode
         dwf.FDwfAnalogInTriggerTypeSet(self.hdwf, DConsts.trigtypeEdge)
         
-        # Set the trigger channel (0-based index)
-        dwf.FDwfAnalogInTriggerChannelSet(self.hdwf, c_int(channel-1))
-        
-        # Set the trigger level
-        dwf.FDwfAnalogInTriggerLevelSet(self.hdwf, c_double(level))
-        
-        # Set the trigger slope to rise/fall/either
-        dwf.FDwfAnalogInTriggerConditionSet(self.hdwf, slope)
-    
-        
-
     def print_trigger_settings(self):
         """
         Print all current trigger settings to the console.
@@ -403,66 +387,69 @@ class DigiScope:
         Returns:
             None
         """
+        # Collection of messages to display at once
+        messages = []
+        
         # Get trigger source
         source = c_int()
         dwf.FDwfAnalogInTriggerSourceGet(self.hdwf, byref(source))
-        print(f"Trigger source: {source.value}")
+        messages.append(f"Trigger source: {source.value}")
 
         # Get trigger type 
         ttype = c_int()
         dwf.FDwfAnalogInTriggerTypeGet(self.hdwf, byref(ttype))
-        print(f"Trigger type: {ttype.value}")
+        messages.append(f"Trigger type: {ttype.value}")
 
         # Get trigger channel
         channel = c_int()
         dwf.FDwfAnalogInTriggerChannelGet(self.hdwf, byref(channel)) 
-        print(f"Trigger channel: {channel.value+1}")
+        messages.append(f"Trigger channel: {channel.value+1}")
 
         # Get trigger level
         level = c_double()
         dwf.FDwfAnalogInTriggerLevelGet(self.hdwf, byref(level))
-        print(f"Trigger level: {level.value:.3f}V")
+        messages.append(f"Trigger level: {level.value:.3f}V")
 
         # Get trigger condition
         condition = c_int()
         dwf.FDwfAnalogInTriggerConditionGet(self.hdwf, byref(condition))
-        print(f"Trigger condition: {condition.value}")
+        messages.append(f"Trigger condition: {condition.value}")
 
         # Get trigger position
         position = c_double()
         dwf.FDwfAnalogInTriggerPositionGet(self.hdwf, byref(position))
-        print(f"Trigger position: {position.value:.6f}s")
+        messages.append(f"Trigger position: {position.value:.6f}s")
 
         # Get trigger hysteresis
         hysteresis = c_double()
         dwf.FDwfAnalogInTriggerHysteresisGet(self.hdwf, byref(hysteresis))
-        print(f"Trigger hysteresis: {hysteresis.value:.3f}V")
+        messages.append(f"Trigger hysteresis: {hysteresis.value:.3f}V")
 
         # Get trigger length settings (for pulse trigger)
         length = c_double()
         dwf.FDwfAnalogInTriggerLengthGet(self.hdwf, byref(length))
-        print(f"Trigger length: {length.value:.6f}s")
+        messages.append(f"Trigger length: {length.value:.6f}s")
 
         length_condition = c_int()
         dwf.FDwfAnalogInTriggerLengthConditionGet(self.hdwf, byref(length_condition))
-        print(f"Trigger length condition: {length_condition.value}")
+        messages.append(f"Trigger length condition: {length_condition.value}")
 
         # Get auto timeout
         timeout = c_double()
         dwf.FDwfAnalogInTriggerAutoTimeoutGet(self.hdwf, byref(timeout))
-        print(f"Auto trigger timeout: {timeout.value:.3f}s")
+        messages.append(f"Auto trigger timeout: {timeout.value:.3f}s")
 
-    def set_pulse_trigger(self, channel=1, level=2.0, polarity="+", \
-                        width=50e-6, condition=">"):
+        # Display all messages together
+        for msg in messages:
+            display(msg)
+
+    def set_pulse_trigger(self, width=50e-6, condition=">"):
         """
         Configure a pulse trigger on a specific channel.
         
         Sets up the oscilloscope to trigger on pulses of specific width.
         
         Args:
-            channel (int): Channel to use as trigger source (1 or 2)
-            level (float): Voltage level at which to trigger
-            polarity (str): Edge direction: "+" for rising, "-" for falling, "=" for either
             width (float): Pulse width in seconds
             condition (str): Width comparison: "<" for less than, ">" for greater than, "=" for equal
         
@@ -471,30 +458,16 @@ class DigiScope:
         """
         # Map polarity and condition symbols to constants
         # Use the correct constants for pulse trigger
-        polar = {"+": DConsts.DwfTriggerSlopeRise, 
-                 "-": DConsts.DwfTriggerSlopeFall,
-                 "=": DConsts.DwfTriggerSlopeEither}
         cond = {"<": DConsts.triglenLess, 
                 ">": DConsts.triglenMore, 
                 "=": DConsts.triglenTimeout}
+        self.validate_kwargs(cond, condition)
 
-        # Disable auto trigger
-        dwf.FDwfAnalogInTriggerAutoTimeoutSet(self.hdwf, c_double(0))
-        
         # Set trigger source to analog in detector
         dwf.FDwfAnalogInTriggerSourceSet(self.hdwf, DConsts.trigsrcDetectorAnalogIn)
         
         # Set trigger type to pulse
         dwf.FDwfAnalogInTriggerTypeSet(self.hdwf, DConsts.trigtypePulse)
-        
-        # Set trigger channel (0-based index)
-        dwf.FDwfAnalogInTriggerChannelSet(self.hdwf, c_int(channel-1))
-        
-        # Set trigger level
-        dwf.FDwfAnalogInTriggerLevelSet(self.hdwf, c_double(level))
-        
-        # Set trigger condition (rise/fall/either)
-        dwf.FDwfAnalogInTriggerConditionSet(self.hdwf, polar[polarity])
         
         # Set pulse width and condition
         dwf.FDwfAnalogInTriggerLengthSet(self.hdwf, c_double(width))
@@ -537,6 +510,7 @@ class DigiScope:
                         "rampdown": DConsts.funcRampDown,
                         "sinepower": DConsts.funcSinePower,
                         "sinena": DConsts.funcSineNA}
+        self.validate_kwargs(waveform_map, waveform)
         
         # Configure the analog output
         dwf.FDwfAnalogOutNodeEnableSet(self.hdwf, c_int(0), c_int(0), c_int(1))  # Enable channel 1
@@ -547,7 +521,7 @@ class DigiScope:
         dwf.FDwfAnalogOutConfigure(self.hdwf, c_int(0), c_int(1))  # Start the output
 
     
-    def acquire_single(self):
+    def acquire_single(self, verbose=0):
         """
         Acquire a single triggered capture.
         
@@ -557,35 +531,40 @@ class DigiScope:
         Returns:
             pandas.DataFrame: DataFrame containing time, ch1, and ch2 data columns
         """
-        nSamples = self.params["scope"]["samples"]
-        frequency = self.params["scope"]["frequency"]
-
         # Set up the channels
-        channel1 = (c_double*nSamples)()
-        channel2 = (c_double*nSamples)()
-        self.dwf.FDwfAnalogInConfigure(self.hdwf, c_int(0), c_int(1))
-        # Acquire the stack
-        print("Beginning acquisition")
-        # Update capture index for UI
-        self.capture_index = 1
-            
-        # Wait for acquisition to complete
+        channel1, channel2 = self.allocate_memory(1)
+        
         try:
-            self.await_acquisition()
-        except KeyboardInterrupt:
-            print("Keyboard Interrupt at Acquisition {}".format(self.capture_index))
+            self.dwf.FDwfAnalogInConfigure(self.hdwf, c_int(0), c_int(1))
+            
+            # Acquire the stack - update status in place
+            display("Beginning acquisition")
+            
+            # Update capture index for UI
+            self.capture_index = 1
+                
+            # Wait for acquisition to complete, error handling in await_acquisition
+            self.await_acquisition(verbose=verbose)
+     
+            df = self.import_current_data(channel1, channel2)
+            if df is None:
+                display("Failed to import data from device")
+                return None
+                
+            self.update_data_connectors(df)
+
+            # Update last_data for UI access
+            self.last_data = df
+            self.data_ready = True
+
+            return df
+            
+        except Exception as e:
+            clear_output(wait=True)
+            display(f"Error in acquisition setup: {str(e)}")
             return None
 
-        df = self.import_current_data(channel1, channel2, nSamples, frequency)
-        self.update_data_connectors(df)
-
-        # Update last_data for UI access
-        self.last_data = df
-        self.data_ready = True
-
-        return df
-
-    def acquire_series(self, num_captures, chan=[1, 2], callback=None,verbose=0):
+    def acquire_series(self, num_captures, chan=[1, 2], callback=None, verbose=0):
         """
         Acquire a stack of captures using external triggering.
         
@@ -597,102 +576,166 @@ class DigiScope:
             List of channels to acquire (1, 2, or [1, 2])
         callback : function, optional
             Callback function to call after each acquisition
+        verbose : int
+            If > 0, display status updates during acquisition
             
         Returns:
         --------
         list
             List of dictionaries containing the acquired data
         """
-        nSamples = self.params["scope"]["samples"]
-        frequency = self.params["scope"]["frequency"]
+        
         # Initialize the stack
-        stack = []
         stack_df = []
+        
         # Set up the channels
         if isinstance(chan, int):
             chan = [chan]
-        channel1 = []
-        channel2 = []
-        for i in range(num_captures):
-            channel1.append((c_double*nSamples)())
-            channel2.append((c_double*nSamples)())
-        self.dwf.FDwfAnalogInConfigure(self.hdwf, c_int(0), c_int(1))
-        # Acquire the stack
-        print("Beginning acquisition")
+        channel1, channel2 = self.allocate_memory(num_captures)
+        
+        
         try:
-            for i in range(num_captures):
-                # Update capture index for UI
-                self.capture_index = i + 1
-                if verbose > 0:
-                    display("Acquiring: {}/{}".format(i+1,num_captures))
-                    clear_output(wait=True)
-                # Wait for acquisition to complete
-                self.await_acquisition()
-                df = self.import_current_data(channel1[i], channel2[i], nSamples, frequency)
-                stack_df.append(df)
-                # Update last_data for UI access
-                self.last_data = stack
-                self.data_ready = True
-        except KeyboardInterrupt:
-            print("Keyboard Interrupt at Acquisition {}".format(i))
+            self.dwf.FDwfAnalogInConfigure(self.hdwf, c_int(0), c_int(1))
+            
+            # Display initial message
+            display(f"Beginning acquisition of {num_captures} captures")
+            
+            try:
+                for i in range(num_captures):
+                    # Update capture index for UI
+                    self.capture_index = i + 1
+                    
+                    # Update status if verbose mode is enabled
+                    if verbose > 0:
+                        # Update in place rather than accumulating outputs
+                        display(f"Acquiring: {i+1}/{num_captures}")
+                    
+                    # Wait for acquisition to complete
+                    self.await_acquisition(verbose=verbose)
+                    
+                    # Process the data
+
+                    df = self.import_current_data(channel1[i], channel2[i])
+                    if df is None:
+                        display(f"Warning: Failed to import data for capture {i+1}")
+                        continue
+                        
+                    stack_df.append(df)
+                    
+                    # Update last_data for UI access
+                    self.last_data = df
+                    self.data_ready = True
+                    
+                    # Call the callback if provided
+                    if callback and callable(callback):
+                        try:
+                            callback(df)
+                        except Exception as e:
+                            if verbose > 0:
+                                display(f"Warning: Callback error: {str(e)}")
+                
+                # Acquisition complete, clear status message
+                clear_output(wait=True)
+                if stack_df:
+                    display(f"Completed {len(stack_df)}/{num_captures} acquisitions successfully")
+                else:
+                    display("No valid data was acquired")
+                
+            except KeyboardInterrupt:
+                clear_output(wait=True)
+                display(f"Acquisition cancelled by user at capture {self.capture_index}")
+                # Return partial results if we have any
+                if stack_df:
+                    display(f"Returning {len(stack_df)} completed captures")
+                    return stack_df
+                return None
+            except Exception as e:
+                clear_output(wait=True)
+                display(f"Error during acquisition series: {str(e)}")
+                if stack_df:
+                    display(f"Returning {len(stack_df)} completed captures")
+                    return stack_df
+                return None
+                
+            return stack_df
+            
+        except Exception as e:
+            clear_output(wait=True)
+            display(f"Error setting up acquisition series: {str(e)}")
             return None
-        return stack_df
-    
-    def acquire_continuous(self, callback=None, verbose=0):
+
+    def acquire_continuous(self, callback=None, verbose=0, benchmark=False):
         """
         Acquire data continuously from the device.
         
         This method sets up the device for continuous acquisition and calls the
-        callback function after each acquisition."""
-        nSamples = self.params["scope"]["samples"]
-        frequency = self.params["scope"]["frequency"]
-        # Initialize the stack
+        callback function after each acquisition.
+        
+        Parameters:
+        -----------
+        callback : function, optional
+            Function to call with each acquired DataFrame
+        verbose : int
+            If > 0, display status updates during acquisition
+        benchmark : bool, optional
+            If True, benchmark 1. setup time, 2. acquisition time, 3. data transfer time.
+        """
+        channel1, channel2 = self.allocate_memory(1)
 
-        channel1 = (c_double*nSamples)()
-        channel2 = (c_double*nSamples)()
+        # Track successful acquisitions
+        successful_acquisitions = 0
         
-        # Initial configuration
-        self.dwf.FDwfAnalogInConfigure(self.hdwf, c_int(0), c_int(1))
-        
-        # Acquire the stack
-        print("Beginning continuous acquisition")
         try:
-            while True:
-                # Update capture index for UI
-                self.capture_index += 1
-                if verbose > 0:
-                    display("Acquiring: {}".format(self.capture_index))
-                    clear_output(wait=True)
-                
-                # Make sure we're properly configured for the next acquisition
-                # Ensure trigger settings are properly applied
-                self.configure_trigger(self.params["trigger"])
-                
-                # Start the acquisition
-                self.dwf.FDwfAnalogInConfigure(self.hdwf, c_int(0), c_int(1))
-                
-                # Wait for acquisition to complete
-                try:
-                    self.await_acquisition()
-                except KeyboardInterrupt:
-                    print("Keyboard Interrupt at Acquisition {}".format(self.capture_index))
-                    return None
-                df = self.import_current_data(channel1, channel2, nSamples, frequency)
-
-                # Update last_data for UI access
-                self.last_data = df
-                self.data_ready = True
-                
-                # Call the callback if provided
-                if callback:
-                    callback(df)
+            # Initial configuration
+            self.dwf.FDwfAnalogInConfigure(self.hdwf, c_int(0), c_int(1))
+            
+            # Display initial message
+            display("Beginning continuous acquisition (press Ctrl+C to stop)")
+            
+            try:
+                while True:
+                    t0 = time.time()
+                    # Update capture index for UI
+                    self.capture_index += 1
                     
-                # Small sleep to prevent CPU overload
-                time.sleep(0.01)
+                    # Update status if verbose mode is enabled
+                    if verbose > 0:
+                        display(f"Acquiring: capture {self.capture_index}")
+                    # Start the acquisition, config takes <1ms
+                    self.dwf.FDwfAnalogInConfigure(self.hdwf, c_int(0), c_int(1))
+                    # Wait for acquisition to complete
+                    self.await_acquisition(verbose=verbose)
+                    if benchmark: t1 = self.benchmark(t0, "Acquisition time")
+                    
+                        
+                    # Process the data, <1s for 10M samples
+                    df = self.import_current_data(channel1, channel2)
+                    if df is None:
+                        if verbose > 0:
+                            display(f"Warning: Failed to import data for capture {self.capture_index}")
+                        continue
+                    
+                    # Count successful acquisition
+                    successful_acquisitions += 1
+
+                    # Update last_data for UI access
+                    self.last_data = df
+                    
+                    # Small sleep to prevent CPU overload - this is necessary for device operation
+                    time.sleep(0.001)
+                    #clear output every 2 captures
+                    if self.capture_index % 2 == 0:
+                        clear_output(wait=True)
                 
-        except KeyboardInterrupt:
-            print("Keyboard Interrupt - Continuous acquisition stopped")
-            return None
+            except KeyboardInterrupt:
+                clear_output(wait=True)
+                display(f"Acquisition stopped after {successful_acquisitions} captures")
+                return
+                
+        except Exception as e:
+            clear_output(wait=True)
+            display(f"Error setting up continuous acquisition: {str(e)}")
+            return
 
     def update_data_connectors(self, df):
         """
@@ -702,11 +745,21 @@ class DigiScope:
         """
         if self.data_connectors is not None:
             try:
-                self.data_connectors[0].cb_set_data(df['ch1volts'], df['time'])
-                self.data_connectors[1].cb_set_data(df['ch2volts'], df['time'])
+                # Check if data is valid before sending to UI
+                if len(df) > 0 and 'ch1volts' in df and 'time' in df and 'ch2volts' in df:
+                    self.data_connectors[0].cb_set_data(df['ch1volts'], df['time'])
+                    self.data_connectors[1].cb_set_data(df['ch2volts'], df['time'])
+                else:
+                    # Don't display anything to avoid cluttering output
+                    # This can happen in normal operation with empty data frames
+                    pass
             except Exception as e:
-                # Safely handle errors that might occur due to threading issues
-                print(f"Error updating data connectors: {e}")
+                # Log the error but don't disrupt the acquisition process
+                # Only show error every 10th time to avoid cluttering output
+                if self.capture_index % 10 == 0:
+                    # Only clear and display if this is a significant error, not just empty data
+                    display(f"Warning: Error updating UI with latest data (will retry): {e}")
+                    # Don't clear_output here to avoid flickering during acquisition
 
     def graph(self):
         """Initialize UI on the main thread to ensure thread safety with PyQt."""
@@ -731,9 +784,10 @@ class DigiScope:
         allowing the UI to be responsive without blocking the notebook.
         """
         # Create the UI
-        ui = self.graph()
-        
+        display("Initializing oscilloscope UI...")
         try:
+            ui = self.graph()
+            
             # Try to use IPython's event loop integration
             from IPython import get_ipython
             ipython = get_ipython()
@@ -744,19 +798,25 @@ class DigiScope:
                     # Enable GUI event loop integration
                     try:
                         ipython.magic('gui qt')
-                        print("Qt event loop integrated with Jupyter - UI should appear in a separate window")
+                        display("Qt event loop integrated with Jupyter")
                     except:
                         ipython.enable_gui('qt')
-                        print("Qt event loop integrated with Jupyter - UI should appear in a separate window")
+                        display("Qt event loop integrated with Jupyter")
+                    
                     # Show the window (should already be visible, but making sure)
                     if hasattr(ui, 'win') and hasattr(ui.win, 'show'):
                         ui.win.show()
-                        
+                        display("UI window launched in separate window")
+                    
+                    clear_output(wait=True)
+                    display("Oscilloscope UI is now running in a separate window")
                     return ui
             
             # Fallback if IPython integration didn't succeed
-            print("Note: For best results in Jupyter, run '%gui qt' in a cell before creating the UI")
-            print("UI window created - you may need to run ui.app.exec_() if window doesn't appear")
+            clear_output(wait=True)
+            display("UI window created but requires additional setup:")
+            display("1. For best results in Jupyter, run '%gui qt' in a cell before creating the UI")
+            display("2. You may need to run ui.app.exec_() if window doesn't appear")
             
             # Try to show the window without blocking
             if hasattr(ui, 'win') and hasattr(ui.win, 'show'):
@@ -764,13 +824,13 @@ class DigiScope:
             self.ui = ui
             return self.ui
             
-        except ImportError:
-            print("IPython integration not available")
-            print("To use in Jupyter, run '%gui qt' in a cell before creating the UI")
-            print("Alternatively, run ui.app.exec_() to show the window (will block until closed)")
-            self.ui = ui
-            return self.ui
-
+        except Exception as e:
+            clear_output(wait=True)
+            display("Error initializing UI:")
+            display(str(e))
+            display("Check that PyQt is properly installed and that you're in a GUI-capable environment")
+            return None
+            
     def _run_event_loop(self, app):
         """
         Run the Qt event loop in a separate thread.
@@ -780,7 +840,7 @@ class DigiScope:
         if threading.current_thread() is not threading.main_thread():
             app.exec_()
 
-    def load_params(self, params,  display_editable=False):
+    def load_params(self, params, display_editable=False):
         """
         If params is a path, load params dictionary from Json file, configure scope.
         If params is a dictionary, use it as the params dictionary, configure scope.
@@ -801,8 +861,10 @@ class DigiScope:
         if isinstance(params, str):
             # Load parameters from JSON file
             path = params
+            display(f"Loading parameters from {path}")
             with open(path, 'r') as f:
                 params = json.load(f)
+            clear_output(wait=True)  # Clear after load is complete
         else:
             #use default path
             path = "DwfSettings.json"
@@ -810,26 +872,34 @@ class DigiScope:
         
         try:
             self.configure_all(params)
+            display("Device configured successfully")
+            clear_output(wait=True)
         except Exception as e:
-            print(f"Error configuring all: {e}")
+            display(f"Error configuring device: {e}")
+            #print traceback
+            
+            traceback.print_exc()
             return
         
         if display_editable:
-            table = SettingTable(self,path)
-            table.display()
-        return self.params
+            self.table = SettingTable(self,path)
+            widget = self.table.display()
+            # Display the widget in Jupyter notebook
+            display(widget)
+        return #self.params
             
     def save_params(self, path):
-        """Save the current parameters to a JSON file."""
+        """Save the current parameters to a JSON file, overwrite existing file."""
+        display(f"Saving parameters to {path}...")
         with open(path, 'w') as f:
             json.dump(self.params, f, indent=4)
-        print(f"Parameters saved to {path}")
-        
+        display(f"Parameters saved successfully to {path}")
+        clear_output(wait=True)
         
     def set_data_connectors(self, data_connectors):
         self.data_connectors = data_connectors
 
-    def await_acquisition(self):
+    def await_acquisition(self, verbose=0):
         """
         Wait for the acquisition to complete.
         Let ui be interactive with the user.
@@ -842,21 +912,27 @@ class DigiScope:
         """
         ui_period = .016 # 60 Hz
         t0 = time.time()
+
         while True:
             status = c_byte()
             try:
                 if dwf.FDwfAnalogInStatus(self.hdwf, c_int(1), byref(status)) != 1:
                     szError = create_string_buffer(512)
                     dwf.FDwfGetLastErrorMsg(szError)
-                    print("failed to open device\n"+str(szError.value))
-                    raise Exception("failed to open device")
+                    if verbose > 0:
+                        display(f"Failed to get device status: {str(szError.value)}")
+                    clear_output(wait=True)  # Clear the output before raising exception
+                    raise Exception("failed to get device status")
             except KeyboardInterrupt:
-                print("Keyboard Interrupt")
+                if verbose > 0:
+                    display("Acquisition cancelled by user")
                 raise KeyboardInterrupt
-            #if done, breaks
+            
+            # If acquisition is done, break out of the loop
             if status.value == DConsts.DwfStateDone.value:
                 break
                 
+            # Process UI events periodically
             t1 = time.time()
             if t1 - t0 > ui_period:
                 t0 = t1
@@ -865,25 +941,83 @@ class DigiScope:
                     if hasattr(self.ui, 'app') and self.ui.app is not None:
                         self.ui.app.processEvents()
             else:
-                time.sleep(0.01)  # Small sleep to prevent CPU hogging
+                # This sleep is necessary for device operation to prevent CPU hogging
+                time.sleep(0.01)
 
-    def import_current_data(self, buf1, buf2, nSamples, frequency):
+    def import_current_data(self, buf1, buf2):
         """
         Import the current data from the device.
+        
+        Parameters:
+        -----------
+        buf1, buf2 : c_double arrays
+            Buffers to store the channel data
+        nSamples : int
+            Number of samples to import
+        frequency : float
+            Sampling frequency in Hz
+            
+        Returns:
+        --------
+        pandas.DataFrame
+            DataFrame containing time, ch1volts, and ch2volts columns,
+            or None if an error occurs
         """            
-        #compile data
-        self.dwf.FDwfAnalogInStatusData(self.hdwf, 0, buf1, nSamples) # get channel 1 data
-        self.dwf.FDwfAnalogInStatusData(self.hdwf, 1, buf2, nSamples) # get channel 2 data
+        nSamples = int(self.params["scope"]["samples"])
+        frequency = self.params["scope"]["frequency"]
+        try:
+            # Get channel data from device
+            t0 = time.time()
+            status1 = self.dwf.FDwfAnalogInStatusData(self.hdwf, 0, buf1, c_int(nSamples))
+            status2 = self.dwf.FDwfAnalogInStatusData(self.hdwf, 1, buf2, c_int(nSamples))
+            t1 = time.time()
+            display(f"Data transfer time: {t1-t0:.2f}s")
+            
+            if status1 != 1 or status2 != 1:
+                # Don't display here to avoid cluttering output during series acquisitions
+                # The calling function will handle errors
+                return None
+            # Convert to DataFrame, 70ms for 10M samples
+            df = pd.DataFrame({
+                'time': np.linspace(0, nSamples/frequency, nSamples),
+                'ch1volts': np.frombuffer(buf1, dtype=np.float64),
+                'ch2volts': np.frombuffer(buf2, dtype=np.float64)
+            })
+            t3 = time.time()
+
+            thread = threading.Thread(target=self.update_data_connectors, args=(df,))
+            thread.start()
+            return df
+            
+        except Exception as e:
+            # Minimal error handling here - let the calling function decide how to display
+            display(f"Error importing data: {e}")
+            clear_output(wait=True)
+            traceback.print_exc()
+            raise e
         
-        #convert to DF
-        df = pd.DataFrame({
-            'time': numpy.linspace(0, nSamples/frequency, nSamples),
-            'ch1volts': numpy.frombuffer(buf1, dtype=numpy.float64),
-            'ch2volts': numpy.frombuffer(buf2, dtype=numpy.float64)
-        })
-        self.update_data_connectors(df)
-        return df
-        
+    def allocate_memory(self, N=1):
+        """Allocate memory for N acquisitions of data for each channel."""
+        nSamples = int(self.params["scope"]["samples"])
+        channel1 = [(c_double*nSamples)() for _ in range(N)]
+        channel2 = [(c_double*nSamples)() for _ in range(N)]
+        if N == 1:
+            return channel1[0], channel2[0]
+        else:
+            return channel1, channel2
+    
+    def benchmark(self, t0, msg=""):
+        """Convenience function to benchmark time between some prior t0 and now."""
+        t1 = time.time()
+        dt = t1 - t0
+        display(f"{msg}: {dt:.2f}s")
+        return t1
+    
+    def validate_kwargs(self, dct, key):
+        if key not in dct:
+            raise ValueError(f"Unrecognized parameter: {key} \nValid parameters are: {dct.keys()}")
+        return dct[key]
+    
     def __del__(self):
         self.close()
         
@@ -908,14 +1042,20 @@ def self_trigger_test(params):
     ds.configure_all(params)
     ds.print_trigger_settings()
     ds.generate_waveform("sine",20, 0.0, 1.5)
-    #ds.start_live_graph()
+    
+    # Display acquisition status
+    display("Starting acquisition...")
+    
     t0 = time.time()
     dfs = ds.acquire_series(1)
     t1 = time.time()
-    print(len(dfs))
-    print(len(dfs[0]['time']))
-    print(f"Time taken: {t1-t0} seconds")
-
+    
+    # Update with results (all at once)
+    clear_output(wait=True)
+    if dfs:
+        display(f"Acquired {len(dfs)} dataset(s)")
+        display(f"Dataset contains {len(dfs[0]['time'])} samples")
+        display(f"Time taken: {t1-t0:.3f} seconds")
 
 def edge_trigger_test(params):
     """
@@ -946,7 +1086,8 @@ def ui_trigger_test(params):
     # Create UI (will now show the main window)
     ds.graph()
     
-    print("UI should be visible now. Starting data acquisition...")
+    display("UI should be visible now. Starting data acquisition...")
+    clear_output(wait=True)
     
     # Start acquiring data in a background thread
     def run_acquisition():
@@ -960,7 +1101,8 @@ def ui_trigger_test(params):
     acquisition_thread.start()
     
     # This blocks until the window is closed
-    print("Running Qt event loop in main thread. Close window to exit.")
+    display("Running Qt event loop in main thread. Close window to exit.")
+    clear_output(wait=True)
     sys.exit(app.exec_())
 
 if __name__ == "__main__":

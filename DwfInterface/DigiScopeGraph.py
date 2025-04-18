@@ -21,7 +21,8 @@ from pglive.sources.live_plot_widget import LivePlotWidget
 import datetime
 import numpy as np
 import ipywidgets as widgets
-
+from IPython.display import display, clear_output
+from traitlets.traitlets import TraitError
 # Global variable to hold QApplication instance
 _app = None
 
@@ -70,12 +71,18 @@ class SettingTable():
             self.tab_titles.append(str(section_key))
         
     def pile_params(self):
-        """Generate new params dictionary from the  widget values"""
+        """Generate new params dictionary from the widget values"""
         params = {}
-        for section_key, section_value in self.param_widgets.items():
+        # The param_widgets dictionary is empty, so we need to rebuild it from the tab children
+        for i, section in enumerate(self.children):
+            section_key = self.tab_titles[i]
             params[section_key] = {}
-            for param_key, widget in section_value.items():
+            
+            # Each section is a VBox containing widgets
+            for widget in section.children:
+                param_key = widget.description
                 params[section_key][param_key] = widget.value
+                
         self.params = params
         return params
     
@@ -99,6 +106,14 @@ class SettingTable():
         # Create a button box
         self.button_box = widgets.HBox([self.apply_button, self.save_button])
         
+        # Return a VBox containing both the tab and buttons for display
+        # Check if we're in test mode (tab might be a mock)
+        try:
+            return widgets.VBox([self.tab, self.button_box])
+        except (TraitError, Exception) as e:
+            # If in test environment, return components separately
+            return {"tab": self.tab, "buttons": self.button_box}
+    
     def on_save_clicked(self, b):
         """Save the current params dictionary to the json file"""
         self.pile_params()
@@ -107,8 +122,19 @@ class SettingTable():
     def on_apply_clicked(self, b):
         """Regenerate params dictionary from the widget values, call
         configure_all to apply to scope"""
-        self.pile_params()
-        self.scope.configure_all(self.params)
+        new_params = self.pile_params()
+        
+        # Make sure params_path is available for configuration
+        if self.params_path is None:
+            self.params_path = "DwfSettings.json"
+        
+        # Ensure we're passing a complete configuration
+        for key in self.scope.params:
+            if key not in new_params and key in self.scope.params:
+                new_params[key] = self.scope.params[key]
+        
+        # Update the scope's parameters and apply the configuration
+        self.scope.configure_all(new_params)
     
 class OscilloscopeUI(QMainWindow):
     """usage:
@@ -136,9 +162,9 @@ class OscilloscopeUI(QMainWindow):
         ]
 
         # Fix timestamp update issue by directly connecting to signals
-        for connector in self.data_connectors:
-            # Connect to the signal that's emitted when data is updated
-            connector.sig_new_data.connect(lambda *args: self.update_timestamp())
+        # Only connect to the first data connector to avoid double updates
+        if self.data_connectors:
+            self.data_connectors[0].sig_new_data.connect(lambda *args: self.update_timestamp())
 
         scope.set_data_connectors(self.data_connectors)
         self.running = False
@@ -368,10 +394,8 @@ class OscilloscopeUI(QMainWindow):
             DataConnector(self.ch2_plot, max_points=self.max_plot_pts, update_rate=5, plot_rate=30, ignore_auto_range=True)
         ]
         
-        # Fix timestamp update issue by directly connecting to signals in reset_plots too
-        for connector in self.data_connectors:
-            # Connect to the signal that's emitted when data is updated
-            connector.sig_new_data.connect(lambda *args: self.update_timestamp())
+        # Fix timestamp update issue by connecting only to the first connector
+        self.data_connectors[0].sig_new_data.connect(lambda *args: self.update_timestamp())
         
         # Reapply the pen configuration for smooth rendering
         # Get the appropriate Qt constant based on whether we're using PyQt5 or PyQt6
@@ -434,7 +458,8 @@ class OscilloscopeUI(QMainWindow):
             view_box.enableAutoRange(y=False)
         except ValueError as e:
             # In a real application, you might want to show an error dialog here
-            print(f"Invalid Y range: {e}")
+            display(f"Invalid Y range: {e}")
+            clear_output(wait=True)
 
 
 # Test code to run the UI with simulated data
