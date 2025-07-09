@@ -105,6 +105,8 @@ class DigiScope:
         Attempts to connect to the first available Digilent device with multiple
         retry attempts if the device is busy. Will quit the application if
         connection fails after maximum attempts.
+
+        If called when device is already open, will simply return a successful connection.
         
         Returns:
             None
@@ -150,6 +152,7 @@ class DigiScope:
         clear_output(wait=True)
         display("Failed to open device after multiple attempts. Please close any other applications using the device.")
         quit()
+
 
     def close(self):
         """
@@ -546,7 +549,7 @@ class DigiScope:
             # Wait for acquisition to complete, error handling in await_acquisition
             self.await_acquisition(verbose=verbose)
      
-            df = self.import_current_data(channel1, channel2)
+            df = self.import_current_data(channel1, channel2, transfer_fn = None)
             if df is None:
                 display("Failed to import data from device")
                 return None
@@ -564,7 +567,7 @@ class DigiScope:
             display(f"Error in acquisition setup: {str(e)}")
             return None
 
-    def acquire_series(self, num_captures, chan=[1, 2], callback=None, verbose=0):
+    def acquire_series(self, num_captures, chan=[1, 2], verbose=0, transfer_fn = None):
         """
         Acquire a stack of captures using external triggering.
         
@@ -615,7 +618,7 @@ class DigiScope:
                     
                     # Process the data
 
-                    df = self.import_current_data(channel1[i], channel2[i])
+                    df = self.import_current_data(channel1[i], channel2[i], transfer_fn = transfer_fn)
                     if df is None:
                         display(f"Warning: Failed to import data for capture {i+1}")
                         continue
@@ -625,14 +628,6 @@ class DigiScope:
                     # Update last_data for UI access
                     self.last_data = df
                     self.data_ready = True
-                    
-                    # Call the callback if provided
-                    if callback and callable(callback):
-                        try:
-                            callback(df)
-                        except Exception as e:
-                            if verbose > 0:
-                                display(f"Warning: Callback error: {str(e)}")
                 
                 # Acquisition complete, clear status message
                 clear_output(wait=True)
@@ -664,7 +659,7 @@ class DigiScope:
             display(f"Error setting up acquisition series: {str(e)}")
             return None
 
-    def acquire_continuous(self, callback=None, verbose=0, benchmark=False):
+    def acquire_continuous(self, verbose=0, benchmark=False, transfer_fn = None):
         """
         Acquire data continuously from the device.
         
@@ -709,7 +704,7 @@ class DigiScope:
                     
                         
                     # Process the data, <1s for 10M samples
-                    df = self.import_current_data(channel1, channel2)
+                    df = self.import_current_data(channel1, channel2, transfer_fn = transfer_fn)
                     if df is None:
                         if verbose > 0:
                             display(f"Warning: Failed to import data for capture {self.capture_index}")
@@ -737,18 +732,30 @@ class DigiScope:
             display(f"Error setting up continuous acquisition: {str(e)}")
             return
 
-    def update_data_connectors(self, df):
+    def update_data_connectors(self, df,transfer_fn = None):
         """
         Update the data connectors with the latest data.
         Thread-safe implementation that won't crash if UI is accessed from multiple threads.
         Decimates data to reduce the amount sent to the UI while preserving the overall waveform.
+        If transfer_fn is provided, it will be applied to the data before sending to the UI.
+        transfer_fn should take a pandas.DataFrame and return a pandas.DataFrame, retaining keys,
+        but UI will adapt if length is changed.
         """
         if self.data_connectors is not None:
+            #see if we need to change max points
+            if transfer_fn is not None:
+                new_df = transfer_fn(df)
+                new_Npoints = new_df.shape[0]
+                old_Npoints = self.ui.ds * self.ui.max_plot_pts
+                if new_Npoints != old_Npoints:
+                    self.ui.update_Npoints(new_Npoints)
+            else:
+                new_df = df
             try:
                 # Check if data is valid before sending to UI
-                if len(df) > 0 and 'ch1volts' in df and 'time' in df and 'ch2volts' in df:
-                    self.data_connectors[0].cb_set_data(df['ch1volts'], df['time'])
-                    self.data_connectors[1].cb_set_data(df['ch2volts'], df['time'])
+                if len(new_df) > 0 and 'ch1volts' in new_df and 'time' in new_df and 'ch2volts' in new_df:
+                    self.data_connectors[0].cb_set_data(new_df['ch1volts'], new_df['time'])
+                    self.data_connectors[1].cb_set_data(new_df['ch2volts'], new_df['time'])
                 else:
                     # Don't display anything to avoid cluttering output
                     # This can happen in normal operation with empty data frames
@@ -944,7 +951,7 @@ class DigiScope:
                 # This sleep is necessary for device operation to prevent CPU hogging
                 time.sleep(0.01)
 
-    def import_current_data(self, buf1, buf2):
+    def import_current_data(self, buf1, buf2, transfer_fn = None):
         """
         Import the current data from the device.
         
@@ -985,7 +992,7 @@ class DigiScope:
             })
             t3 = time.time()
 
-            thread = threading.Thread(target=self.update_data_connectors, args=(df,))
+            thread = threading.Thread(target=self.update_data_connectors, args=(df,transfer_fn))
             thread.start()
             return df
             

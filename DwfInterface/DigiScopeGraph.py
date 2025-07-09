@@ -135,7 +135,8 @@ class SettingTable():
         
         # Update the scope's parameters and apply the configuration
         self.scope.configure_all(new_params)
-    
+
+
 class OscilloscopeUI(QMainWindow):
     """usage:
     scope.ui = OscilloscopeUI(scope)

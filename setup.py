@@ -24,5 +24,6 @@ setup(
         "pglive",
         "ipython>=7.0.0",
         "ipywidgets>=7.0.0",
+        "ipykernel>=6.0.0",
     ],
 ) 
