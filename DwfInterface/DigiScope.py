@@ -633,6 +633,7 @@ class DigiScope:
                 clear_output(wait=True)
                 if stack_df:
                     display(f"Completed {len(stack_df)}/{num_captures} acquisitions successfully")
+                    return stack_df
                 else:
                     display("No valid data was acquired")
                 
