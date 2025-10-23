@@ -636,28 +636,23 @@ class DigiScope:
                 else:
                     display("No valid data was acquired")
                 
-            except KeyboardInterrupt:
+            except KeyboardInterrupt: # raise KeyboardInterrupt to stop the acquisition
                 clear_output(wait=True)
                 display(f"Acquisition cancelled by user at capture {self.capture_index}")
-                # Return partial results if we have any
-                if stack_df:
-                    display(f"Returning {len(stack_df)} completed captures")
-                    return stack_df
-                return None
+                raise KeyboardInterrupt
+
             except Exception as e:
                 clear_output(wait=True)
                 display(f"Error during acquisition series: {str(e)}")
-                if stack_df:
-                    display(f"Returning {len(stack_df)} completed captures")
-                    return stack_df
-                return None
+                raise e
                 
-            return stack_df
-            
+        except KeyboardInterrupt:
+            # Re-raise KeyboardInterrupt without modification to preserve its type
+            raise
         except Exception as e:
             clear_output(wait=True)
-            display(f"Error setting up acquisition series: {str(e)}")
-            return None
+            display(f"Error during acquisition series: {str(e)}")
+            raise e
 
     def acquire_continuous(self, verbose=0, benchmark=False, transfer_fn = None):
         """
